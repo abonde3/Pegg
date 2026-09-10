@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>Pegg — Bar Stock &amp; Settlement</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="theme-color" content="#18140F">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root{
+    --bg:#18140F; --panel:#231D16; --panel-2:#2B241B; --line:#3B3125;
+    --text:#EFE7D8; --text-dim:#A99C87; --accent:#C98A3E; --accent-soft:#3A2B18;
+    --good:#5FA779; --good-soft:#20301F; --bad:#C4695A; --bad-soft:#341F1B;
+    --warn:#D9AE4E; --warn-soft:#332B18; --radius:10px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{ background:var(--bg); color:var(--text); font-family:'Inter',system-ui,sans-serif; -webkit-font-smoothing:antialiased; min-height:100vh; }
+  h1,h2,h3{ font-family:'Fraunces',serif; font-weight:600; margin:0; letter-spacing:0.2px; }
+  .mono{font-family:'IBM Plex Mono',monospace; font-variant-numeric: tabular-nums;}
+  #app{display:flex; min-height:100vh;}
+  #sidebar{ width:220px; flex-shrink:0; background:var(--panel); border-right:1px solid var(--line); padding:22px 14px; display:flex; flex-direction:column; gap:4px; }
+  #sidebar .brand{ font-family:'Fraunces',serif; font-size:20px; font-weight:700; color:var(--accent); margin-bottom:18px; padding:0 8px; }
+  #sidebar .brand span{display:block; font-family:'Inter'; font-size:11px; color:var(--text-dim); font-weight:400; margin-top:2px;}
+  .navbtn{ display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; cursor:pointer; color:var(--text-dim); font-size:14px; font-weight:500; border:none; background:transparent; text-align:left; width:100%; }
+  .navbtn:hover{background:var(--panel-2); color:var(--text);}
+  .navbtn.active{background:var(--accent-soft); color:var(--accent);}
+  .navbtn .dot{width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.6;flex-shrink:0;}
+  .sidebar-foot{margin-top:auto; padding-top:14px; border-top:1px solid var(--line);}
+  .who{font-size:12px; color:var(--text-dim); padding:0 8px 8px;}
+  .who b{color:var(--text); font-weight:600;}
+  .who .role{color:var(--accent); font-size:11px;}
+  main{flex:1; padding:0 32px 90px; max-width:1000px;}
+  .topbar{ display:flex; justify-content:flex-end; align-items:center; gap:10px; padding:16px 0 0; }
+  .topbar .who-inline{font-size:12.5px; color:var(--text-dim);}
+  .topbar .who-inline b{color:var(--text);}
+  .pagehead{margin:18px 0 22px;}
+  .pagehead h1{font-size:26px;}
+  .pagehead p{color:var(--text-dim); margin-top:4px; font-size:14px;}
+  .card{ background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:18px 20px; margin-bottom:16px; }
+  .card h3{font-size:15px; margin-bottom:12px; color:var(--text);}
+  .row{display:flex; gap:14px; flex-wrap:wrap;}
+  .stat{flex:1; min-width:140px;}
+  .stat .label{font-size:12px; color:var(--text-dim);}
+  .stat .value{font-family:'Fraunces',serif; font-size:26px; margin-top:4px;}
+  .stat .value.good{color:var(--good);} .stat .value.bad{color:var(--bad);} .stat .value.warn{color:var(--warn);}
+  table{width:100%; border-collapse:collapse; font-size:14px;}
+  th{ text-align:left; padding:8px 10px; font-size:11.5px; color:var(--text-dim); border-bottom:1px solid var(--line); font-weight:600; }
+  td{padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle;}
+  tr:last-child td{border-bottom:none;}
+  td.num, th.num{text-align:right; font-family:'IBM Plex Mono',monospace;}
+  input[type=text], input[type=number], input[type=date], input[type=password], select{ background:var(--bg); border:1px solid var(--line); color:var(--text); padding:8px 10px; border-radius:7px; font-size:14px; width:100%; font-family:'Inter',sans-serif; }
+  input[type=number]{font-family:'IBM Plex Mono',monospace;}
+  input[type=password]{font-family:'IBM Plex Mono',monospace; letter-spacing:2px;}
+  input:focus, select:focus{outline:2px solid var(--accent); outline-offset:1px;}
+  label{font-size:12px; color:var(--text-dim); display:block; margin-bottom:5px;}
+  .field{margin-bottom:12px;}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
+  .grid3{display:grid; grid-template-columns:1fr 1fr auto; gap:10px; align-items:end;}
+  button.btn{ background:var(--accent); color:#20160A; border:none; padding:10px 16px; border-radius:8px; font-weight:600; font-size:14px; cursor:pointer; }
+  button.btn:hover{filter:brightness(1.08);}
+  button.btn.secondary{background:var(--panel-2); color:var(--text); border:1px solid var(--line);}
+  button.btn.danger{background:var(--bad-soft); color:var(--bad); border:1px solid var(--bad);}
+  button.btn:disabled{opacity:.4; cursor:not-allowed;}
+  button.iconbtn{ background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:13px; padding:4px 8px; }
+  button.iconbtn:hover{color:var(--accent);}
+  .badge{display:inline-block; padding:3px 9px; border-radius:20px; font-size:12px; font-weight:600;}
+  .badge.good{background:var(--good-soft); color:var(--good);}
+  .badge.bad{background:var(--bad-soft); color:var(--bad);}
+  .badge.warn{background:var(--warn-soft); color:var(--warn);}
+  .badge.neutral{background:var(--panel-2); color:var(--text-dim);}
+  .empty{color:var(--text-dim); font-size:14px; padding:20px 4px; text-align:center;}
+  .overlay{ position:fixed; inset:0; background:rgba(10,8,5,.6); display:flex; align-items:center; justify-content:center; z-index:50; padding:16px; }
+  .modal{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:22px; width:100%; max-width:420px; max-height:90vh; overflow:auto; }
+  .modal h3{margin-bottom:16px;}
+  .modal .actions{display:flex; justify-content:flex-end; gap:10px; margin-top:16px;}
+  .toast{ position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:var(--panel-2); border:1px solid var(--line); color:var(--text); padding:10px 18px; border-radius:8px; font-size:13px; z-index:100; box-shadow:0 6px 18px rgba(0,0,0,.35); }
+  .authwrap{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .authcard{ background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:32px 28px; width:100%; max-width:380px; }
+  .authcard .brand{ font-family:'Fraunces',serif; font-size:24px; font-weight:700; color:var(--accent); margin-bottom:4px; }
+  .authcard .sub{color:var(--text-dim); font-size:13px; margin-bottom:22px;}
+  .authcard .err{color:var(--bad); font-size:13px; margin-top:4px; min-height:16px;}
+  .userlist{display:flex; flex-direction:column; gap:8px; margin-bottom:16px;}
+  .userpick{ display:flex; justify-content:space-between; align-items:center; padding:10px 12px; border:1px solid var(--line); border-radius:8px; cursor:pointer; background:var(--bg); }
+  .userpick:hover{border-color:var(--accent);}
+  .userpick .name{font-size:14px;}
+  .userpick .role{font-size:11px; color:var(--text-dim);}
+  .creditrow{display:grid; grid-template-columns:1fr 110px auto; gap:8px; align-items:center; margin-bottom:8px;}
+  #bottomnav{display:none;}
+  @media (max-width: 820px){
+    #sidebar{display:none;}
+    main{padding:0 14px 90px;}
+    .topbar{padding-top:12px;}
+    #bottomnav{ display:flex; position:fixed; bottom:0; left:0; right:0; background:var(--panel); border-top:1px solid var(--line); overflow-x:auto; z-index:40; }
+    #bottomnav button{ flex:1; min-width:74px; background:none; border:none; color:var(--text-dim); font-size:10.5px; padding:10px 4px 8px; display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer; }
+    #bottomnav button .dot{width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.7;}
+    #bottomnav button.active{color:var(--accent);}
+    .row{flex-direction:column;} .grid2{grid-template-columns:1fr;} .grid3{grid-template-columns:1fr;}
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="modalRoot"></div>
+<div id="toastRoot"></div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ====== FILL THESE IN FROM YOUR SUPABASE PROJECT (Settings → API) ======
+  const SUPABASE_URL = "https://atuplufrgsbkuhzisdng.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF0dXBsdWZyZ3Nia3VoemlzZG5nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg5NzM2OTcsImV4cCI6MjEwNDU0OTY5N30.7hr-dzj9yULzFuG9egWQJns3t184s9e7HDzZDY7HB90";
+  // =========================================================================
+
+  const NOT_CONFIGURED = SUPABASE_URL.includes('YOUR_') || SUPABASE_ANON_KEY.includes('YOUR_');
+  const sb = NOT_CONFIGURED ? null : window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  const ALL_TABS = [
+    {id:'dashboard', label:'Dashboard', roles:['owner','manager']},
+    {id:'products', label:'Products', roles:['owner']},
+    {id:'mainstorage', label:'Main Storage', roles:['owner']},
+    {id:'transfer', label:'Transfer Stock', roles:['owner','manager']},
+    {id:'dailyinv', label:'Daily Inventory', roles:['owner','manager']},
+    {id:'closing', label:'Daily Closing', roles:['owner','manager']},
+    {id:'credit', label:'Credit / Tabs', roles:['owner','manager']},
+    {id:'reports', label:'Reports', roles:['owner']},
+    {id:'users', label:'Users', roles:['owner']},
+  ];
+
+  let state = {
+    products: [], users: [], history: [], draft: null, creditEntries: [],
+    session: null, loginPickedId: null, tab: 'dashboard', loading: true
+  };
+
+  function fmt(n){ n = Number(n)||0; return '₹' + n.toLocaleString('en-IN', {maximumFractionDigits:2}); }
+  function todayISO(){ return new Date().toISOString().slice(0,10); }
+  function toast(msg){
+    const root = document.getElementById('toastRoot');
+    const el = document.createElement('div');
+    el.className='toast'; el.textContent=msg;
+    root.appendChild(el);
+    setTimeout(()=>el.remove(), 2400);
+  }
+  function productById(id){ return state.products.find(p=>p.id===id); }
+  function productLabel(p){ return p ? p.name + (p.size ? ' ' + p.size : '') : 'Unknown product'; }
+  function visibleTabs(){ return state.session ? ALL_TABS.filter(t=>t.roles.includes(state.session.role)) : []; }
+  function outstandingCreditTotal(){ return state.creditEntries.filter(c=>c.status==='outstanding').reduce((a,c)=>a+Number(c.amount||0),0); }
+
+  // ---------- DATA LAYER (Supabase) ----------
+  async function loadAll(){
+    const [{data: products, error: pErr}, {data: users, error: uErr}, {data: closings, error: cErr}, {data: draftRow, error: dErr}, {data: creditEntries, error: crErr}] = await Promise.all([
+      sb.from('products').select('*').order('name'),
+      sb.from('app_users').select('*'),
+      sb.from('closings').select('*, closing_line_items(*)').order('closing_date', {ascending:false}),
+      sb.from('closing_draft').select('*').eq('id', true).maybeSingle(),
+      sb.from('credit_entries').select('*').order('created_at', {ascending:false})
+    ]);
+    if(pErr || uErr || cErr || dErr || crErr){
+      console.error(pErr||uErr||cErr||dErr||crErr);
+      toast('Could not reach the database — check your Supabase URL/key and internet connection.');
+    }
+    state.products = products || [];
+    state.users = users || [];
+    state.creditEntries = creditEntries || [];
+    state.history = (closings||[]).map(c=>({
+      id: c.id, date: c.closing_date, totalExpected: c.total_expected, cash: c.cash, upi: c.upi, card: c.card,
+      credit: c.credit||0, totalCollected: c.total_collected, difference: c.difference, status: c.status, closedBy: c.closed_by,
+      records: (c.closing_line_items||[]).map(li=>({
+        productId: li.product_id, name: li.product_name, available: li.available, remaining: li.remaining,
+        sold: li.sold, bulkSold: li.bulk_sold||0, sellingPrice: li.selling_price, expected: li.expected
+      }))
+    }));
+    state.draft = (draftRow && draftRow.closing_date) ? {
+      date: draftRow.closing_date, available: draftRow.available||{}, remaining: draftRow.remaining||{},
+      cash: draftRow.cash||'', upi: draftRow.upi||'', card: draftRow.card||'', credits: draftRow.credits||[],
+      bulkSold: draftRow.bulk_sold||{}
+    } : null;
+    state.loading = false;
+    render();
+  }
+
+  async function saveDraft(){
+    const d = state.draft;
+    await sb.from('closing_draft').update({
+      closing_date: d.date, available: d.available, remaining: d.remaining,
+      cash: d.cash || 0, upi: d.upi || 0, card: d.card || 0, credits: d.credits || [], bulk_sold: d.bulkSold || {},
+      updated_at: new Date().toISOString()
+    }).eq('id', true);
+  }
+  async function clearDraft(){
+    state.draft = null;
+    await sb.from('closing_draft').update({
+      closing_date: null, available: {}, remaining: {}, cash: 0, upi: 0, card: 0, credits: [], bulk_sold: {}, updated_at: new Date().toISOString()
+    }).eq('id', true);
+  }
+
+  // ---------- NOT CONFIGURED SCREEN ----------
+  function renderNotConfigured(){
+    document.getElementById('app').innerHTML = `
+      <div class="authwrap"><div class="authcard" style="max-width:460px;">
+        <div class="brand">Pegg</div>
+        <div class="sub">Almost there — this app needs to be pointed at your Supabase project before it can store anything.</div>
+        <p style="font-size:13px; color:var(--text-dim); line-height:1.6;">
+          Open this file in a text editor and fill in <code>SUPABASE_URL</code> and <code>SUPABASE_ANON_KEY</code>
+          near the top of the &lt;script&gt; section — you'll find both in your Supabase project under
+          <b>Settings → API</b>. Then reload this page.
+        </p>
+      </div></div>`;
+  }
+
+  // ---------- AUTH SCREENS ----------
+  function renderSetup(){
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <div class="authwrap"><div class="authcard">
+        <div class="brand">Pegg</div>
+        <div class="sub">First time setup — create the owner account. The owner has full access, including managing other staff logins.</div>
+        <div class="field"><label>Your name</label><input type="text" id="su_name" placeholder="e.g. Aniket"></div>
+        <div class="field"><label>Username</label><input type="text" id="su_username" placeholder="owner"></div>
+        <div class="field"><label>PIN (4+ digits)</label><input type="password" id="su_pin" inputmode="numeric"></div>
+        <div class="err" id="su_err"></div>
+        <button class="btn" id="su_create" style="width:100%; margin-top:6px;">Create owner account</button>
+      </div></div>
+    `;
+    document.getElementById('su_create').onclick = async ()=>{
+      const name = document.getElementById('su_name').value.trim();
+      const username = document.getElementById('su_username').value.trim().toLowerCase();
+      const pin = document.getElementById('su_pin').value.trim();
+      const errEl = document.getElementById('su_err');
+      if(!name || !username || pin.length<4){ errEl.textContent = 'Enter your name, a username, and a PIN of at least 4 digits.'; return; }
+      const {data, error} = await sb.from('app_users').insert({name, username, pin, role:'owner'}).select().single();
+      if(error){ errEl.textContent = error.message; return; }
+      state.users = [data];
+      state.session = data;
+      state.tab = 'dashboard';
+      render();
+    };
+  }
+
+  function renderLogin(){
+    const app = document.getElementById('app');
+    const picked = state.loginPickedId ? state.users.find(u=>u.id===state.loginPickedId) : null;
+    app.innerHTML = `
+      <div class="authwrap"><div class="authcard">
+        <div class="brand">Pegg</div>
+        <div class="sub">${picked ? 'Enter PIN for '+picked.name : 'Choose your account to sign in.'}</div>
+        ${!picked ? `
+          <div class="userlist">
+            ${state.users.map(u=>`
+              <div class="userpick" data-pick="${u.id}">
+                <div><div class="name">${u.name}</div><div class="role">${u.role==='owner'?'Owner':'Manager / Staff'}</div></div>
+                <span style="color:var(--text-dim);">›</span>
+              </div>`).join('')}
+          </div>
+        ` : `
+          <div class="field"><label>PIN</label><input type="password" id="li_pin" inputmode="numeric" autofocus></div>
+          <div class="err" id="li_err"></div>
+          <button class="btn" id="li_submit" style="width:100%; margin-top:6px;">Sign in</button>
+          <button class="btn secondary" id="li_back" style="width:100%; margin-top:8px;">Back</button>
+        `}
+      </div></div>
+    `;
+    if(!picked){
+      app.querySelectorAll('[data-pick]').forEach(el=>{ el.onclick = ()=>{ state.loginPickedId = el.dataset.pick; render(); }; });
+    } else {
+      document.getElementById('li_back').onclick = ()=>{ state.loginPickedId=null; render(); };
+      const pinInput = document.getElementById('li_pin');
+      const doLogin = ()=>{
+        if(pinInput.value.trim() === picked.pin){
+          state.session = picked; state.loginPickedId = null; state.tab = 'dashboard'; render();
+        } else { document.getElementById('li_err').textContent = 'Incorrect PIN.'; }
+      };
+      document.getElementById('li_submit').onclick = doLogin;
+      pinInput.onkeydown = (e)=>{ if(e.key==='Enter') doLogin(); };
+    }
+  }
+  function logout(){ state.session = null; state.loginPickedId = null; state.tab = 'dashboard'; render(); }
+
+  // ---------- SHELL / NAV ----------
+  function renderShell(){
+    document.getElementById('app').innerHTML = `<div id="sidebar"></div><main id="main"></main><div id="bottomnav"></div>`;
+  }
+  function renderNav(){
+    const sbEl = document.getElementById('sidebar');
+    const tabs = visibleTabs();
+    sbEl.innerHTML = `<div class="brand">Pegg<span>Stock &amp; daily settlement</span></div>`;
+    tabs.forEach(t=>{
+      const b = document.createElement('button');
+      b.className = 'navbtn' + (state.tab===t.id ? ' active':'');
+      b.innerHTML = `<span class="dot"></span>${t.label}`;
+      b.onclick = ()=>{ state.tab=t.id; render(); };
+      sbEl.appendChild(b);
+    });
+    const foot = document.createElement('div');
+    foot.className = 'sidebar-foot';
+    foot.innerHTML = `<div class="who"><b>${state.session.name}</b><div class="role">${state.session.role==='owner'?'Owner':'Manager / Staff'}</div></div>
+      <button class="navbtn" id="logoutBtnSide"><span class="dot"></span>Log out</button>`;
+    sbEl.appendChild(foot);
+    document.getElementById('logoutBtnSide').onclick = logout;
+
+    const bn = document.getElementById('bottomnav');
+    bn.innerHTML='';
+    tabs.forEach(t=>{
+      const b = document.createElement('button');
+      b.className = state.tab===t.id ? 'active':'';
+      b.innerHTML = `<span class="dot"></span>${t.label}`;
+      b.onclick = ()=>{ state.tab=t.id; render(); };
+      bn.appendChild(b);
+    });
+    const lb = document.createElement('button');
+    lb.innerHTML = `<span class="dot"></span>Log out`;
+    lb.onclick = logout;
+    bn.appendChild(lb);
+  }
+  function renderTopbar(){
+    return `<div class="topbar"><span class="who-inline">Signed in as <b>${state.session.name}</b> · ${state.session.role==='owner'?'Owner':'Manager'}</span></div>`;
+  }
+
+  // ---------- DASHBOARD ----------
+  function renderDashboard(){
+    const main = document.getElementById('main');
+    const todayRecord = state.history.find(h=>h.date===todayISO());
+    const mainTotal = state.products.reduce((a,p)=>a+(p.main_stock||0),0);
+    const dailyTotal = state.products.reduce((a,p)=>a+(p.daily_stock||0),0);
+    let statusBadge = `<span class="badge neutral">Not started</span>`;
+    if(state.draft) statusBadge = `<span class="badge warn">Closing in progress</span>`;
+    if(todayRecord) statusBadge = `<span class="badge good">Closing completed</span>`;
+    let salesBlock = `<div class="empty">No closing finalized for today yet.</div>`;
+    if(todayRecord){
+      const diffClass = todayRecord.status==='MATCHED' ? 'good' : (todayRecord.status==='SHORTAGE' ? 'bad':'warn');
+      salesBlock = `<div class="row">
+        <div class="stat"><div class="label">Expected sales</div><div class="value">${fmt(todayRecord.totalExpected)}</div></div>
+        <div class="stat"><div class="label">Collected (cash+UPI+card)</div><div class="value">${fmt(todayRecord.totalCollected)}</div></div>
+        <div class="stat"><div class="label">Credit given today</div><div class="value warn">${fmt(todayRecord.credit)}</div></div>
+        <div class="stat"><div class="label">Difference</div><div class="value ${diffClass}">${fmt(Math.abs(todayRecord.difference))} ${todayRecord.status!=='MATCHED' ? '('+todayRecord.status+')':''}</div></div>
+      </div>`;
+    }
+    main.innerHTML = renderTopbar() + `
+      <div class="pagehead"><h1>Today's overview</h1>
+        <p>${new Date().toLocaleDateString('en-IN',{weekday:'long', day:'numeric', month:'long', year:'numeric'})} · ${statusBadge}</p></div>
+      <div class="card"><h3>Sales &amp; settlement</h3>${salesBlock}</div>
+      <div class="card"><h3>Inventory &amp; credit</h3><div class="row">
+        <div class="stat"><div class="label">Main storage (bottles)</div><div class="value mono">${mainTotal}</div></div>
+        <div class="stat"><div class="label">Daily inventory (bottles)</div><div class="value mono">${dailyTotal}</div></div>
+        <div class="stat"><div class="label">Outstanding credit</div><div class="value warn">${fmt(outstandingCreditTotal())}</div></div>
+      </div></div>
+      ${state.session.role==='owner' ? `<div class="card"><h3>Recent closings</h3>${renderRecentHistoryTable()}</div>` : ''}
+    `;
+  }
+  function renderRecentHistoryTable(){
+    const recent = [...state.history].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,7);
+    if(!recent.length) return `<div class="empty">No days finalized yet.</div>`;
+    return `<table><thead><tr><th>Date</th><th class="num">Expected</th><th class="num">Collected</th><th class="num">Credit</th><th>Status</th></tr></thead>
+      <tbody>${recent.map(r=>{
+        const cls = r.status==='MATCHED'?'good':(r.status==='SHORTAGE'?'bad':'warn');
+        return `<tr><td>${r.date}</td><td class="num">${fmt(r.totalExpected)}</td><td class="num">${fmt(r.totalCollected)}</td><td class="num">${fmt(r.credit)}</td><td><span class="badge ${cls}">${r.status}</span></td></tr>`;
+      }).join('')}</tbody></table>`;
+  }
+
+  // ---------- PRODUCTS ----------
+  function renderProducts(){
+    const main = document.getElementById('main');
+    main.innerHTML = renderTopbar() + `
+      <div class="pagehead"><h1>Products</h1><p>Each bottle size is tracked as its own product.</p></div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between; align-items:center;">
+          <h3 style="margin:0;">Product list</h3><button class="btn" id="addProductBtn">Add product</button>
+        </div>
+        <div style="margin-top:14px;">
+          ${state.products.length ? `<table><thead><tr>
+            <th>Name</th><th>Brand</th><th>Category</th><th>Size</th><th class="num">Purchase ₹</th><th class="num">Single ₹</th><th class="num">Bulk ₹</th><th></th>
+          </tr></thead><tbody>
+          ${state.products.map(p=>`
+            <tr><td>${p.name}</td><td>${p.brand||'—'}</td><td>${p.category||'—'}</td><td>${p.size||'—'}</td>
+              <td class="num">${fmt(p.purchase_price)}</td><td class="num">${fmt(p.selling_price)}</td>
+              <td class="num">${p.bulk_enabled ? fmt(p.bulk_price) : '—'}</td>
+              <td style="text-align:right; white-space:nowrap;">
+                <button class="iconbtn" data-edit="${p.id}">Edit</button>
+                <button class="iconbtn" data-del="${p.id}">Delete</button>
+              </td></tr>`).join('')}
+          </tbody></table>` : `<div class="empty">No products yet. Add your first product to get started.</div>`}
+        </div>
+      </div>
+    `;
+    document.getElementById('addProductBtn').onclick = ()=>openProductModal(null);
+    main.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>openProductModal(b.dataset.edit));
+    main.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>deleteProduct(b.dataset.del));
+  }
+  function openProductModal(id){
+    const p = id ? productById(id) : {id:null, name:'', brand:'', category:'', size:'', unit:'Bottle', purchase_price:'', selling_price:'', bulk_enabled:false, bulk_price:''};
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="overlay"><div class="modal">
+        <h3>${id ? 'Edit product' : 'Add product'}</h3>
+        <div class="field"><label>Product name</label><input type="text" id="f_name" value="${p.name}" placeholder="Royal Stag"></div>
+        <div class="grid2">
+          <div class="field"><label>Brand</label><input type="text" id="f_brand" value="${p.brand||''}"></div>
+          <div class="field"><label>Category</label><input type="text" id="f_category" value="${p.category||''}" placeholder="Whisky / Beer"></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Bottle size</label><input type="text" id="f_size" value="${p.size||''}" placeholder="180ml"></div>
+          <div class="field"><label>Unit</label><input type="text" id="f_unit" value="${p.unit||'Bottle'}"></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Purchase price (₹)</label><input type="number" id="f_purchase" value="${p.purchase_price}"></div>
+          <div class="field"><label>Selling price (₹, single)</label><input type="number" id="f_selling" value="${p.selling_price}"></div>
+        </div>
+        <div class="field" style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="f_bulk_enabled" style="width:auto;" ${p.bulk_enabled?'checked':''}>
+          <label style="margin:0;">Also sold in bulk at a different price</label>
+        </div>
+        <div class="field" id="f_bulk_price_wrap" style="${p.bulk_enabled?'':'display:none;'}">
+          <label>Bulk price (₹ per unit, when sold as part of a bulk order)</label>
+          <input type="number" id="f_bulk_price" value="${p.bulk_price||''}">
+        </div>
+        <div class="actions"><button class="btn secondary" id="cancelBtn">Cancel</button><button class="btn" id="saveBtn">Save product</button></div>
+      </div></div>`;
+    document.getElementById('cancelBtn').onclick = closeModal;
+    document.getElementById('f_bulk_enabled').onchange = (e)=>{
+      document.getElementById('f_bulk_price_wrap').style.display = e.target.checked ? '' : 'none';
+    };
+    document.getElementById('saveBtn').onclick = async ()=>{
+      const name = document.getElementById('f_name').value.trim();
+      if(!name){ toast('Product name is required'); return; }
+      const payload = {
+        name, brand: document.getElementById('f_brand').value.trim(),
+        category: document.getElementById('f_category').value.trim(),
+        size: document.getElementById('f_size').value.trim(),
+        unit: document.getElementById('f_unit').value.trim() || 'Bottle',
+        purchase_price: parseFloat(document.getElementById('f_purchase').value)||0,
+        selling_price: parseFloat(document.getElementById('f_selling').value)||0,
+        bulk_enabled: document.getElementById('f_bulk_enabled').checked,
+        bulk_price: parseFloat(document.getElementById('f_bulk_price').value)||0,
+      };
+      let error;
+      if(id){ ({error} = await sb.from('products').update(payload).eq('id', id)); }
+      else { ({error} = await sb.from('products').insert(payload)); }
+      if(error){ toast('Save failed: '+error.message); return; }
+      closeModal(); toast('Product saved');
+      await loadAll();
+    };
+  }
+  async function deleteProduct(id){
+    if(!confirm('Remove this product? Its stock history will also be removed.')) return;
+    const {error} = await sb.from('products').delete().eq('id', id);
+    if(error){ toast('Delete failed: '+error.message); return; }
+    await loadAll();
+  }
+  function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
+
+  // ---------- MAIN STORAGE ----------
+  function renderMainStorage(){
+    const main = document.getElementById('main');
+    main.innerHTML = renderTopbar() + `
+      <div class="pagehead"><h1>Main storage</h1><p>Your overall bulk stock. Add new stock here when it arrives.</p></div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between; align-items:center;">
+          <h3 style="margin:0;">Available stock</h3><button class="btn" id="addStockBtn" ${state.products.length?'':'disabled'}>Add stock</button>
+        </div>
+        <div style="margin-top:14px;">
+        ${state.products.length ? `<table><thead><tr><th>Product</th><th class="num">Available quantity</th></tr></thead>
+          <tbody>${state.products.map(p=>`<tr><td>${productLabel(p)}</td><td class="num">${p.main_stock||0}</td></tr>`).join('')}</tbody>
+        </table>` : `<div class="empty">Add products first, then record stock here.</div>`}
+        </div>
+      </div>
+    `;
+    if(state.products.length) document.getElementById('addStockBtn').onclick = openAddStockModal;
+  }
+  function openAddStockModal(){
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="overlay"><div class="modal">
+        <h3>Add new stock</h3>
+        <div class="field"><label>Product</label><select id="s_product">${state.products.map(p=>`<option value="${p.id}">${productLabel(p)}</option>`).join('')}</select></div>
+        <div class="grid2">
+          <div class="field"><label>Quantity</label><input type="number" id="s_qty" min="1"></div>
+          <div class="field"><label>Purchase price (₹, optional)</label><input type="number" id="s_price"></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Date</label><input type="date" id="s_date" value="${todayISO()}"></div>
+          <div class="field"><label>Invoice / reference (optional)</label><input type="text" id="s_ref"></div>
+        </div>
+        <div class="field"><label>Supplier (optional)</label><input type="text" id="s_supplier"></div>
+        <div class="actions"><button class="btn secondary" id="cancelBtn">Cancel</button><button class="btn" id="saveBtn">Add to main storage</button></div>
+      </div></div>`;
+    document.getElementById('cancelBtn').onclick = closeModal;
+    document.getElementById('saveBtn').onclick = async ()=>{
+      const pid = document.getElementById('s_product').value;
+      const qty = parseInt(document.getElementById('s_qty').value, 10);
+      if(!qty || qty<=0){ toast('Enter a valid quantity'); return; }
+      const priceVal = parseFloat(document.getElementById('s_price').value) || null;
+      const product = productById(pid);
+      const updatePayload = { main_stock: (product.main_stock||0) + qty };
+      if(priceVal>0) updatePayload.purchase_price = priceVal;
+      const {error:e1} = await sb.from('products').update(updatePayload).eq('id', pid);
+      const {error:e2} = await sb.from('stock_additions').insert({
+        product_id: pid, quantity: qty, purchase_price: priceVal,
+        added_date: document.getElementById('s_date').value || todayISO(),
+        supplier: document.getElementById('s_supplier').value.trim() || null,
+        invoice_ref: document.getElementById('s_ref').value.trim() || null
+      });
+      if(e1||e2){ toast('Failed: '+((e1||e2).message)); return; }
+      closeModal(); toast('Stock added to main storage');
+      await loadAll();
+    };
+  }
+
+  // ---------- TRANSFER ----------
+  function renderTransfer(){
+    const main = document.getElementById('main');
+    main.innerHTML = renderTopbar() + `
+      <div class="pagehead"><h1>Transfer stock</h1><p>Move bottles from main storage into daily inventory. You decide the quantity — nothing is transferred automatically.</p></div>
+      <div class="card">
+        ${state.products.length ? `<table><thead><tr>
+          <th>Product</th><th class="num">Main storage</th><th class="num">Daily inventory</th><th style="width:140px;">Transfer</th>
+        </tr></thead><tbody>
+          ${state.products.map(p=>`
+            <tr><td>${productLabel(p)}</td><td class="num">${p.main_stock||0}</td><td class="num">${p.daily_stock||0}</td>
+              <td><input type="number" min="0" max="${p.main_stock||0}" placeholder="0" data-transfer="${p.id}" style="width:100%;"></td></tr>`).join('')}
+        </tbody></table>
+        <div class="actions" style="margin-top:16px; display:flex; justify-content:flex-end;"><button class="btn" id="confirmTransfer">Confirm transfer</button></div>`
+        : `<div class="empty">No products yet — ask the owner to add products first.</div>`}
+      </div>
+    `;
+    const btn = document.getElementById('confirmTransfer');
+    if(btn) btn.onclick = async ()=>{
+      const inputs = main.querySelectorAll('[data-transfer]');
+      const moves = [];
+      for(const inp of inputs){
+        const qty = parseInt(inp.value,10)||0;
+        if(qty<=0) continue;
+        const pid = inp.dataset.transfer;
+        const p = productById(pid);
+        if(qty > (p.main_stock||0)){ toast(`${productLabel(p)}: cannot transfer more than available (${p.main_stock||0})`); return; }
+        moves.push({pid, qty, p});
+      }
+      if(!moves.length){ toast('Enter at least one quantity to transfer'); return; }
+      for(const m of moves){
+        await sb.from('products').update({ main_stock: m.p.main_stock - m.qty, daily_stock: (m.p.daily_stock||0) + m.qty }).eq('id', m.pid);
+        await sb.from('stock_transfers').insert({ product_id: m.pid, quantity: m.qty });
+      }
+      toast('Transfer complete');
+      await loadAll();
+    };
+  }
+
+  // ---------- DAILY INVENTORY ----------
+  function renderDailyInv(){
+    const main = document.getElementById('main');
+    main.innerHTML = renderTopbar() + `
+      <div class="pagehead"><h1>Daily inventory</h1><p>Stock currently available for sale at the bar. This does not reset automatically — leftover bottles carry into the next day.</p></div>
+      <div class="card">
+        ${state.products.length ? `<table><thead><tr><th>Product</th><th class="num">Quantity</th><th class="num">Selling price</th></tr></thead>
+        <tbody>${state.products.map(p=>`<tr><td>${productLabel(p)}</td><td class="num">${p.daily_stock||0}</td><td class="num">${fmt(p.selling_price)}</td></tr>`).join('')}</tbody>
+        </table>` : `<div class="empty">No products yet.</div>`}
+      </div>
+    `;
+  }
+
+  // ---------- DAILY CLOSING ----------
+  function renderClosing(){
+    const main = document.getElementById('main');
+    if(!state.draft){
+      const todayRecord = state.history.find(h=>h.date===todayISO());
+      main.innerHTML = renderTopbar() + `
+        <div class="pagehead"><h1>Daily closing</h1><p>Count remaining bottles at night to calculate sales and settle money.</p></div>
+        <div class="card">
+          ${todayRecord ? `<div class="empty">Today's closing is already finalized.${state.session.role==='owner' ? ' See it in Reports.' : ''}</div>` : `
+          <h3>Start today's closing</h3>
+          <p style="color:var(--text-dim); font-size:13px; margin-bottom:14px;">This snapshots current daily inventory as the "available" count for the night.</p>
+          <button class="btn" id="startClosing" ${state.products.length?'':'disabled'}>Start daily closing</button>`}
+        </div>`;
+      const startBtn = document.getElementById('startClosing');
+      if(startBtn) startBtn.onclick = async ()=>{
+        const available = {};
+        state.products.forEach(p=>{ available[p.id] = p.daily_stock||0; });
+        state.draft = { date: todayISO(), available, remaining: {}, cash:'', upi:'', card:'', credits: [], bulkSold: {} };
+        await saveDraft();
+        render();
+      };
+      return;
+    }
+    const d = state.draft;
+    d.bulkSold = d.bulkSold || {};
+    const rows = state.products.filter(p=>p.id in d.available);
+    let totalExpected = 0;
+    const summaryRows = rows.map(p=>{
+      const avail = d.available[p.id]||0;
+      const rem = d.remaining[p.id];
+      const hasRem = rem !== undefined && rem !== '';
+      const sold = hasRem ? Math.max(0, avail - Number(rem)) : null;
+      let bulkSold = 0, singleSold = sold, expected = 0;
+      if(sold!==null){
+        if(p.bulk_enabled){
+          const bsRaw = d.bulkSold[p.id];
+          bulkSold = (bsRaw!==undefined && bsRaw!=='') ? Math.min(Math.max(0,Number(bsRaw)), sold) : 0;
+          singleSold = sold - bulkSold;
+          expected = singleSold*(p.selling_price||0) + bulkSold*(p.bulk_price||0);
+        } else {
+          expected = sold*(p.selling_price||0);
+        }
+        totalExpected += expected;
+      }
+      return {p, avail, rem, sold, bulkSold, singleSold, expected};
+    });
+    const allEntered = summaryRows.every(r=>r.sold!==null);
+    const cash = parseFloat(d.cash)||0, upi = parseFloat(d.upi)||0, card = parseFloat(d.card)||0;
+    const totalCollected = cash+upi+card;
+    const creditList = d.credits || [];
+    const creditTotal = creditList.reduce((a,c)=>a+(parseFloat(c.amount)||0),0);
+    const totalAccounted = totalCollected + creditTotal;
+    const diff = totalAccounted - totalExpected;
+    let status = 'MATCHED', statusClass='good';
+    if(diff < -0.5){ status='SHORTAGE'; statusClass='bad'; } else if(diff > 0.5){ status='EXCESS'; statusClass='warn'; }
+
+    main.innerHTML = renderTopbar() + `
+      <div class="pagehead"><h1>Daily closing — ${d.date}</h1><p>Enter remaining stock, then settle collections.</p></div>
+      <div class="card"><h3>1. Physical count</h3>
+        <table><thead><tr><th>Product</th><th class="num">Available</th><th style="width:110px;">Remaining</th><th class="num">Sold</th></tr></thead>
+        <tbody>${summaryRows.map(r=>`
+          <tr><td>${productLabel(r.p)}</td><td class="num">${r.avail}</td>
+            <td><input type="number" min="0" max="${r.avail}" data-remaining="${r.p.id}" value="${r.rem!==undefined?r.rem:''}" style="width:100%;"></td>
+            <td class="num">${r.sold!==null ? r.sold : '—'}</td></tr>`).join('')}</tbody>
+        </table>
+      </div>
+      <div class="card"><h3>2. Sales summary</h3>
+        ${allEntered ? `<table><thead><tr><th>Product</th><th class="num">Sold</th><th style="width:100px;">Bulk sold</th><th class="num">Single ₹</th><th class="num">Bulk ₹</th><th class="num">Expected</th></tr></thead>
+          <tbody>${summaryRows.map(r=>`<tr><td>${productLabel(r.p)}</td><td class="num">${r.sold}</td>
+            <td>${r.p.bulk_enabled ? `<input type="number" min="0" max="${r.sold}" data-bulk="${r.p.id}" value="${d.bulkSold[r.p.id]!==undefined?d.bulkSold[r.p.id]:''}" style="width:100%;">` : '—'}</td>
+            <td class="num">${fmt(r.p.selling_price)}</td>
+            <td class="num">${r.p.bulk_enabled ? fmt(r.p.bulk_price) : '—'}</td>
+            <td class="num">${fmt(r.expected)}</td></tr>`).join('')}</tbody></table>
+          <div class="row" style="margin-top:12px;"><div class="stat"><div class="label">Total expected sales</div><div class="value">${fmt(totalExpected)}</div></div></div>`
+          : `<div class="empty">Enter remaining quantity for every product to see the sales summary.</div>`}
+      </div>
+      <div class="card"><h3>3. Money settlement</h3>
+        <div class="grid2">
+          <div class="field"><label>Cash (₹)</label><input type="number" id="in_cash" value="${d.cash}"></div>
+          <div class="field"><label>UPI (₹)</label><input type="number" id="in_upi" value="${d.upi}"></div>
+        </div>
+        <div class="field"><label>Card (₹)</label><input type="number" id="in_card" value="${d.card}"></div>
+
+        <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line);">
+          <label style="margin-bottom:10px;">Credit — drank now, will pay later</label>
+          <div id="creditRows">
+            ${creditList.map((c,i)=>`
+              <div class="creditrow">
+                <input type="text" placeholder="Who owes (optional)" data-credit-person="${i}" value="${c.person||''}">
+                <input type="number" placeholder="Amount ₹" data-credit-amount="${i}" value="${c.amount||''}">
+                <button class="iconbtn" data-credit-remove="${i}">✕</button>
+              </div>`).join('')}
+          </div>
+          <button class="btn secondary" id="addCreditRow" style="margin-top:4px;">+ Add credit entry</button>
+        </div>
+
+        <div class="row" style="margin-top:16px;">
+          <div class="stat"><div class="label">Expected sales</div><div class="value">${fmt(totalExpected)}</div></div>
+          <div class="stat"><div class="label">Cash + UPI + Card</div><div class="value">${fmt(totalCollected)}</div></div>
+          <div class="stat"><div class="label">Credit today</div><div class="value warn">${fmt(creditTotal)}</div></div>
+          <div class="stat"><div class="label">Difference</div><div class="value ${statusClass}">${fmt(Math.abs(diff))}</div></div>
+        </div>
+        <span class="badge ${statusClass}">${status}${status!=='MATCHED' ? ': '+fmt(Math.abs(diff)) : ''}</span>
+      </div>
+      <div class="card"><div class="actions" style="display:flex; justify-content:space-between;">
+        <button class="btn danger" id="cancelClosing">Cancel closing</button>
+        <button class="btn" id="finalizeDay" ${allEntered?'':'disabled'}>Finalize day</button>
+      </div></div>
+    `;
+    main.querySelectorAll('[data-remaining]').forEach(inp=>{
+      inp.oninput = async ()=>{ d.remaining[inp.dataset.remaining] = inp.value; await saveDraft(); render(); };
+    });
+    main.querySelectorAll('[data-bulk]').forEach(inp=>{
+      inp.oninput = async ()=>{ d.bulkSold[inp.dataset.bulk] = inp.value; await saveDraft(); render(); };
+    });
+    ['cash','upi','card'].forEach(key=>{
+      const el = document.getElementById('in_'+key);
+      if(el) el.oninput = async ()=>{ d[key]=el.value; await saveDraft(); render(); };
+    });
+    document.getElementById('addCreditRow').onclick = async ()=>{
+      d.credits = d.credits || [];
+      d.credits.push({person:'', amount:''});
+      await saveDraft(); render();
+    };
+    main.querySelectorAll('[data-credit-person]').forEach(inp=>{
+      inp.oninput = async ()=>{ d.credits[inp.dataset.creditPerson].person = inp.value; await saveDraft(); };
+    });
+    main.querySelectorAll('[data-credit-amount]').forEach(inp=>{
+      inp.oninput = async ()=>{ d.credits[inp.dataset.creditAmount].amount = inp.value; await saveDraft(); render(); };
+    });
+    main.querySelectorAll('[data-credit-remove]').forEach(btn=>{
+      btn.onclick = async ()=>{ d.credits.splice(Number(btn.dataset.creditRemove),1); await saveDraft(); render(); };
+    });
+    document.getElementById('cancelClosing').onclick = async ()=>{
+      if(!confirm('Discard this closing in progress?')) return;
+      await clearDraft(); render();
+    };
+    const finalizeBtn = document.getElementById('finalizeDay');
+    if(finalizeBtn) finalizeBtn.onclick = async ()=>{
+      if(!allEntered) return;
+      const {data: closingRow, error: e1} = await sb.from('closings').insert({
+        closing_date: d.date, total_expected: totalExpected, cash, upi, card, credit: creditTotal,
+        total_collected: totalCollected, difference: diff, status, closed_by: state.session.name
+      }).select().single();
+      if(e1){ toast('Finalize failed: '+e1.message); return; }
+      const lineItems = summaryRows.map(r=>({
+        closing_id: closingRow.id, product_id: r.p.id, product_name: productLabel(r.p),
+        available: r.avail, remaining: Number(r.rem), sold: r.sold, bulk_sold: r.bulkSold||0,
+        selling_price: r.p.selling_price, expected: r.expected
+      }));
+      const {error: e2} = await sb.from('closing_line_items').insert(lineItems);
+      if(e2){ toast('Finalize failed: '+e2.message); return; }
+      const validCredits = creditList.filter(c=>parseFloat(c.amount)>0);
+      if(validCredits.length){
+        await sb.from('credit_entries').insert(validCredits.map(c=>({
+          closing_id: closingRow.id, person_name: c.person ? c.person.trim() : null,
+          amount: parseFloat(c.amount), entry_date: d.date, status: 'outstanding'
+        })));
+      }
+      for(const r of summaryRows){ await sb.from('products').update({ daily_stock: Number(r.rem) }).eq('id', r.p.id); }
+      await clearDraft();
+      toast('Day finalized');
+      await loadAll();
+    };
+  }
+
+  // ---------- CREDIT / TABS ----------
+  function renderCredit(){
+    const main = document.getElementById('main');
+    const outstanding = state.creditEntries.filter(c=>c.status==='outstanding').sort((a,b)=>new Date(b.entry_date)-new Date(a.entry_date));
+    const paid = state.creditEntries.filter(c=>c.status==='paid').slice(0,20);
+    main.innerHTML = renderTopbar() + `
+      <div class="pagehead"><h1>Credit / Tabs</h1><p>People who drank now and will pay later. Log it here or during daily closing.</p></div>
+      <div class="card"><div class="row">
+        <div class="stat"><div class="label">Total outstanding</div><div class="value warn">${fmt(outstandingCreditTotal())}</div></div>
+        <div class="stat"><div class="label">Open tabs</div><div class="value mono">${outstanding.length}</div></div>
+      </div></div>
+      <div class="card">
+        <h3>Add a credit entry</h3>
+        <div class="grid3">
+          <div class="field" style="margin-bottom:0;"><label>Who owes (optional)</label><input type="text" id="c_person"></div>
+          <div class="field" style="margin-bottom:0;"><label>Amount ₹</label><input type="number" id="c_amount"></div>
+          <button class="btn" id="c_add">Add</button>
+        </div>
+        <div class="field" style="margin-top:10px;"><label>Note (optional)</label><input type="text" id="c_note" placeholder="e.g. two whiskies, will settle Friday"></div>
+      </div>
+      <div class="card"><h3>Outstanding</h3>
+        ${outstanding.length ? `<table><thead><tr><th>Date</th><th>Person</th><th>Note</th><th class="num">Amount</th><th></th></tr></thead>
+          <tbody>${outstanding.map(c=>`
+            <tr><td>${c.entry_date}</td><td>${c.person_name||'—'}</td><td>${c.note||'—'}</td><td class="num">${fmt(c.amount)}</td>
+              <td style="text-align:right;"><button class="iconbtn" data-paid="${c.id}">Mark as paid</button></td></tr>`).join('')}
+          </tbody></table>` : `<div class="empty">No open tabs right now.</div>`}
+      </div>
+      <div class="card"><h3>Recently paid</h3>
+        ${paid.length ? `<table><thead><tr><th>Date given</th><th>Person</th><th class="num">Amount</th><th>Paid on</th></tr></thead>
+          <tbody>${paid.map(c=>`<tr><td>${c.entry_date}</td><td>${c.person_name||'—'}</td><td class="num">${fmt(c.amount)}</td><td>${c.paid_date||'—'}</td></tr>`).join('')}</tbody></table>`
+          : `<div class="empty">Nothing marked paid yet.</div>`}
+      </div>
+    `;
+    document.getElementById('c_add').onclick = async ()=>{
+      const amount = parseFloat(document.getElementById('c_amount').value);
+      if(!amount || amount<=0){ toast('Enter a valid amount'); return; }
+      const {error} = await sb.from('credit_entries').insert({
+        person_name: document.getElementById('c_person').value.trim() || null,
+        note: document.getElementById('c_note').value.trim() || null,
+        amount, entry_date: todayISO(), status: 'outstanding'
+      });
+      if(error){ toast('Failed: '+error.message); return; }
+      toast('Credit entry added');
+      await loadAll();
+    };
+    main.querySelectorAll('[data-paid]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const {error} = await sb.from('credit_entries').update({status:'paid', paid_date: todayISO()}).eq('id', btn.dataset.paid);
+        if(error){ toast('Failed: '+error.message); return; }
+        await loadAll();
+      };
+    });
+  }
+
+  // ---------- REPORTS ----------
+  function renderReports(){
+    const main = document.getElementById('main');
+    const dates = [...new Set(state.history.map(h=>h.date))].sort((a,b)=>b.localeCompare(a));
+    main.innerHTML = renderTopbar() + `
+      <div class="pagehead"><h1>Reports</h1><p>Historical stock and settlement records.</p></div>
+      <div class="card"><h3>Daily report</h3>
+        ${dates.length ? `<div class="field" style="max-width:220px;"><label>Select date</label>
+          <select id="reportDate">${dates.map(d=>`<option value="${d}">${d}</option>`).join('')}</select></div>
+          <div id="dailyReportBody"></div>` : `<div class="empty">No finalized days yet.</div>`}
+      </div>
+      <div class="card"><h3>Inventory report</h3>
+        <div class="grid2">
+          <div><h3 style="font-size:13px; color:var(--text-dim); margin-bottom:8px;">Main storage</h3>
+            ${state.products.length ? `<table><tbody>${state.products.map(p=>`<tr><td>${productLabel(p)}</td><td class="num">${p.main_stock||0}</td></tr>`).join('')}</tbody></table>` : `<div class="empty">—</div>`}</div>
+          <div><h3 style="font-size:13px; color:var(--text-dim); margin-bottom:8px;">Daily inventory</h3>
+            ${state.products.length ? `<table><tbody>${state.products.map(p=>`<tr><td>${productLabel(p)}</td><td class="num">${p.daily_stock||0}</td></tr>`).join('')}</tbody></table>` : `<div class="empty">—</div>`}</div>
+        </div>
+      </div>
+      <div class="card"><h3>Product sales report</h3>${renderProductSalesReport()}</div>
+      <div class="card"><h3>Collection report</h3>
+        ${state.history.length ? `<table><thead><tr><th>Date</th><th class="num">Expected</th><th class="num">Cash</th><th class="num">UPI</th><th class="num">Card</th><th class="num">Credit</th><th>Status</th></tr></thead>
+        <tbody>${[...state.history].sort((a,b)=>b.date.localeCompare(a.date)).map(h=>{
+          const cls = h.status==='MATCHED'?'good':(h.status==='SHORTAGE'?'bad':'warn');
+          return `<tr><td>${h.date}</td><td class="num">${fmt(h.totalExpected)}</td><td class="num">${fmt(h.cash)}</td><td class="num">${fmt(h.upi)}</td><td class="num">${fmt(h.card)}</td><td class="num">${fmt(h.credit)}</td><td><span class="badge ${cls}">${h.status}</span></td></tr>`;
+        }).join('')}</tbody></table>` : `<div class="empty">No finalized days yet.</div>`}
+      </div>
+      <div class="card"><h3>Credit report</h3>
+        <div class="row" style="margin-bottom:10px;"><div class="stat"><div class="label">Currently outstanding</div><div class="value warn">${fmt(outstandingCreditTotal())}</div></div></div>
+        ${state.creditEntries.length ? `<table><thead><tr><th>Date</th><th>Person</th><th class="num">Amount</th><th>Status</th></tr></thead>
+          <tbody>${state.creditEntries.slice(0,30).map(c=>`<tr><td>${c.entry_date}</td><td>${c.person_name||'—'}</td><td class="num">${fmt(c.amount)}</td><td><span class="badge ${c.status==='paid'?'good':'warn'}">${c.status}</span></td></tr>`).join('')}</tbody></table>`
+          : `<div class="empty">No credit entries yet.</div>`}
+      </div>
+    `;
+    if(dates.length){
+      const sel = document.getElementById('reportDate');
+      const renderDay = ()=>{
+        const rec = state.history.find(h=>h.date===sel.value);
+        const cls = rec.status==='MATCHED'?'good':(rec.status==='SHORTAGE'?'bad':'warn');
+        document.getElementById('dailyReportBody').innerHTML = `
+          <table style="margin-top:12px;"><thead><tr><th>Product</th><th class="num">Available</th><th class="num">Closing</th><th class="num">Sold</th><th class="num">Bulk sold</th><th class="num">Price</th><th class="num">Sales</th></tr></thead>
+          <tbody>${rec.records.map(r=>`<tr><td>${r.name}</td><td class="num">${r.available}</td><td class="num">${r.remaining}</td><td class="num">${r.sold}</td><td class="num">${r.bulkSold||0}</td><td class="num">${fmt(r.sellingPrice)}</td><td class="num">${fmt(r.expected)}</td></tr>`).join('')}</tbody></table>
+          <div class="row" style="margin-top:12px;">
+            <div class="stat"><div class="label">Total expected</div><div class="value">${fmt(rec.totalExpected)}</div></div>
+            <div class="stat"><div class="label">Cash+UPI+Card</div><div class="value">${fmt(rec.totalCollected)}</div></div>
+            <div class="stat"><div class="label">Credit</div><div class="value warn">${fmt(rec.credit)}</div></div>
+            <div class="stat"><div class="label">Status</div><div class="value ${cls}" style="font-size:16px;">${rec.status}</div></div>
+          </div>
+          ${rec.closedBy ? `<p style="color:var(--text-dim); font-size:12px; margin-top:10px;">Closed by ${rec.closedBy}</p>` : ''}`;
+      };
+      sel.onchange = renderDay; renderDay();
+    }
+  }
+  function renderProductSalesReport(){
+    if(!state.history.length) return `<div class="empty">No sales history yet.</div>`;
+    const agg = {};
+    state.history.forEach(h=>h.records.forEach(r=>{
+      if(!agg[r.productId]) agg[r.productId]={name:r.name, qty:0, sales:0};
+      agg[r.productId].qty += r.sold; agg[r.productId].sales += r.expected;
+    }));
+    const rows = Object.values(agg).sort((a,b)=>b.sales-a.sales);
+    if(!rows.length) return `<div class="empty">No sales history yet.</div>`;
+    return `<table><thead><tr><th>Product</th><th class="num">Quantity sold</th><th class="num">Total sales</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr><td>${r.name}</td><td class="num">${r.qty}</td><td class="num">${fmt(r.sales)}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  // ---------- USERS ----------
+  function renderUsers(){
+    const main = document.getElementById('main');
+    main.innerHTML = renderTopbar() + `
+      <div class="pagehead"><h1>Users</h1><p>Owner has full access. Manager / staff access is limited to Daily Inventory, Transfer Stock, Daily Closing, and Credit.</p></div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between; align-items:center;"><h3 style="margin:0;">Accounts</h3><button class="btn" id="addUserBtn">Add user</button></div>
+        <div style="margin-top:14px;"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th></th></tr></thead>
+          <tbody>${state.users.map(u=>`
+            <tr><td>${u.name}</td><td>${u.username}</td><td>${u.role==='owner'?'Owner':'Manager / Staff'}</td>
+              <td style="text-align:right; white-space:nowrap;">
+                <button class="iconbtn" data-edituser="${u.id}">Edit</button>
+                ${u.id!==state.session.id ? `<button class="iconbtn" data-deluser="${u.id}">Delete</button>` : ''}
+              </td></tr>`).join('')}
+          </tbody></table></div>
+      </div>
+    `;
+    document.getElementById('addUserBtn').onclick = ()=>openUserModal(null);
+    main.querySelectorAll('[data-edituser]').forEach(b=>b.onclick=()=>openUserModal(b.dataset.edituser));
+    main.querySelectorAll('[data-deluser]').forEach(b=>b.onclick=()=>deleteUser(b.dataset.deluser));
+  }
+  function openUserModal(id){
+    const u = id ? state.users.find(x=>x.id===id) : {id:null, name:'', username:'', pin:'', role:'manager'};
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="overlay"><div class="modal">
+        <h3>${id ? 'Edit user' : 'Add user'}</h3>
+        <div class="field"><label>Name</label><input type="text" id="u_name" value="${u.name}"></div>
+        <div class="field"><label>Username</label><input type="text" id="u_username" value="${u.username}"></div>
+        <div class="field"><label>PIN ${id ? '(leave blank to keep current)' : ''}</label><input type="password" id="u_pin" inputmode="numeric"></div>
+        <div class="field"><label>Role</label><select id="u_role">
+          <option value="manager" ${u.role==='manager'?'selected':''}>Manager / Staff</option>
+          <option value="owner" ${u.role==='owner'?'selected':''}>Owner</option></select></div>
+        <div class="err" id="u_err"></div>
+        <div class="actions"><button class="btn secondary" id="cancelBtn">Cancel</button><button class="btn" id="saveBtn">Save user</button></div>
+      </div></div>`;
+    document.getElementById('cancelBtn').onclick = closeModal;
+    document.getElementById('saveBtn').onclick = async ()=>{
+      const name = document.getElementById('u_name').value.trim();
+      const username = document.getElementById('u_username').value.trim().toLowerCase();
+      const pin = document.getElementById('u_pin').value.trim();
+      const role = document.getElementById('u_role').value;
+      const errEl = document.getElementById('u_err');
+      if(!name || !username){ errEl.textContent = 'Name and username are required.'; return; }
+      const dupe = state.users.find(x=>x.username===username && x.id!==u.id);
+      if(dupe){ errEl.textContent = 'That username is already taken.'; return; }
+      if(!id && pin.length<4){ errEl.textContent = 'Set a PIN of at least 4 digits.'; return; }
+      if(pin && pin.length<4){ errEl.textContent = 'PIN must be at least 4 digits.'; return; }
+      const payload = {name, username, role};
+      if(pin) payload.pin = pin;
+      let error, data;
+      if(id){ ({error} = await sb.from('app_users').update(payload).eq('id', id)); data = {...u, ...payload}; }
+      else { payload.pin = pin; ({data, error} = await sb.from('app_users').insert(payload).select().single()); }
+      if(error){ errEl.textContent = error.message; return; }
+      if(id===state.session.id) state.session = {...state.session, ...payload};
+      closeModal(); toast('User saved');
+      await loadAll();
+    };
+  }
+  async function deleteUser(id){
+    if(!confirm('Remove this user account?')) return;
+    const {error} = await sb.from('app_users').delete().eq('id', id);
+    if(error){ toast('Delete failed: '+error.message); return; }
+    await loadAll();
+  }
+
+  // ---------- RENDER DISPATCH ----------
+  function render(){
+    if(NOT_CONFIGURED){ renderNotConfigured(); return; }
+    if(state.loading){ document.getElementById('app').innerHTML = `<div class="authwrap"><div style="color:var(--text-dim);">Loading…</div></div>`; return; }
+    if(!state.users.length){ renderSetup(); return; }
+    if(!state.session){ renderLogin(); return; }
+    renderShell(); renderNav();
+    const allowed = visibleTabs().map(t=>t.id);
+    if(!allowed.includes(state.tab)) state.tab = allowed[0];
+    switch(state.tab){
+      case 'dashboard': renderDashboard(); break;
+      case 'products': renderProducts(); break;
+      case 'mainstorage': renderMainStorage(); break;
+      case 'transfer': renderTransfer(); break;
+      case 'dailyinv': renderDailyInv(); break;
+      case 'closing': renderClosing(); break;
+      case 'credit': renderCredit(); break;
+      case 'reports': renderReports(); break;
+      case 'users': renderUsers(); break;
+    }
+  }
+
+  if(NOT_CONFIGURED){ render(); } else { loadAll(); }
+
+  if('serviceWorker' in navigator){
+    window.addEventListener('load', ()=>{
+      navigator.serviceWorker.register('sw.js').catch(()=>{});
+    });
+  }
+})();
+</script>
+</body>
+</html>
