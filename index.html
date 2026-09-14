@@ -117,6 +117,17 @@
   .creditrow > *{flex:1; min-width:110px;}
   .creditrow button{flex:0 0 auto; min-width:38px;}
 
+  .listrow{display:flex; justify-content:space-between; align-items:center; padding:14px 10px; border-bottom:1px solid var(--line); cursor:pointer; min-height:48px;}
+  .listrow:last-child{border-bottom:none;}
+  .listrow-title{font-size:14.5px;}
+  .listrow-sub{font-size:12px; color:var(--text-dim); margin-top:2px;}
+  .listrow .chev{color:var(--text-dim); font-size:18px; flex-shrink:0; margin-left:10px;}
+  .detailrow{display:flex; justify-content:space-between; gap:10px; padding:9px 0; border-bottom:1px solid var(--line); font-size:14px;}
+  .detailrow:last-of-type{border-bottom:none;}
+  .navicon{font-size:19px; line-height:1;}
+  .segctl{display:flex; gap:8px; margin-bottom:16px;}
+  .segctl button{flex:1;}
+
   /* Mobile card tables */
   @media (max-width: 820px){
     table.mobile-cards thead{display:none;}
@@ -142,16 +153,14 @@
     main{padding:0 12px 100px;}
     .topbar{padding-top:10px;}
     #bottomnav{
-      display:flex; position:fixed; bottom:0; left:0; right:0; height:64px;
+      display:flex; position:fixed; bottom:0; left:0; right:0; height:66px;
       background:var(--panel); border-top:1px solid var(--line);
-      overflow-x:auto; -webkit-overflow-scrolling:touch; scroll-behavior:smooth;
-      z-index:40; scrollbar-width:none;
+      z-index:40; padding:0 2px;
     }
-    #bottomnav::-webkit-scrollbar{display:none;}
     #bottomnav button{
-      flex:0 0 auto; width:78px; background:none; border:none; color:var(--text-dim);
-      font-size:10.5px; padding:10px 4px 8px; display:flex; flex-direction:column;
-      align-items:center; justify-content:center; gap:4px; cursor:pointer; min-height:56px;
+      flex:1 1 0; min-width:0; background:none; border:none; color:var(--text-dim);
+      font-size:11px; padding:8px 2px 10px; display:flex; flex-direction:column;
+      align-items:center; justify-content:center; gap:3px; cursor:pointer; min-height:58px;
     }
     #bottomnav button .dot{width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.7;}
     #bottomnav button.active{color:var(--accent);}
@@ -184,9 +193,8 @@
   const ALL_TABS = [
     {id:'dashboard', label:'Dashboard', roles:['owner','manager']},
     {id:'products', label:'Products', roles:['owner']},
-    {id:'mainstorage', label:'Main Storage', roles:['owner']},
+    {id:'inventory', label:'Inventory', roles:['owner','manager']},
     {id:'transfer', label:'Transfer', roles:['owner','manager']},
-    {id:'dailyinv', label:'Daily Inv.', roles:['owner','manager']},
     {id:'closing', label:'Closing', roles:['owner','manager']},
     {id:'credit', label:'Credit', roles:['owner','manager']},
     {id:'reports', label:'Reports', roles:['owner']},
@@ -198,9 +206,46 @@
     creditUsers: [], creditTransactions: [],
     transferBatches: [],
     session: null, loginPickedId: null, tab: 'dashboard', loading: true,
-    transferWizard: null // {step:'entering'|'review', qtys:{}}
+    transferWizard: null, // {step:'entering'|'review', qtys:{}}
+    inventorySubTab: 'main',
+    productSearch: '', creditSearch: '',
+    reportsView: null,
+    moreSheetOpen: false
   };
   let draftSaveTimer = null;
+
+  function isMobile(){ return window.innerWidth <= 820; }
+
+  // ---------- inactivity timeout (15 min, warn at 13 min) ----------
+  const INACTIVITY_WARNING_MS = 13*60*1000;
+  const INACTIVITY_LIMIT_MS = 15*60*1000;
+  let inactivityWarnTimer=null, inactivityLogoutTimer=null, lastActivityReset=0;
+  function resetInactivityTimers(){
+    clearTimeout(inactivityWarnTimer); clearTimeout(inactivityLogoutTimer);
+    inactivityWarnTimer = setTimeout(()=>{
+      toast("You've been inactive for a while. Your session will expire soon.");
+    }, INACTIVITY_WARNING_MS);
+    inactivityLogoutTimer = setTimeout(()=>{
+      toast('Signed out due to inactivity.');
+      logout();
+    }, INACTIVITY_LIMIT_MS);
+  }
+  function stopInactivityTimers(){ clearTimeout(inactivityWarnTimer); clearTimeout(inactivityLogoutTimer); }
+  function handleActivity(){
+    if(!state.session) return;
+    const now = Date.now();
+    if(now - lastActivityReset < 5000) return;
+    lastActivityReset = now;
+    resetInactivityTimers();
+  }
+  ['click','keydown','touchstart','mousemove','scroll'].forEach(evt=>{
+    document.addEventListener(evt, handleActivity, {passive:true});
+  });
+  let resizeTimer=null;
+  window.addEventListener('resize', ()=>{
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(()=>{ if(state.session) render(); }, 200);
+  });
 
   // ---------- helpers ----------
   function fmt(n){ n = Number(n)||0; return '₹' + n.toLocaleString('en-IN', {maximumFractionDigits:2}); }
@@ -295,7 +340,7 @@
         const savedId = localStorage.getItem(SESSION_KEY);
         if(savedId){
           const u = state.users.find(x=>x.id===savedId);
-          if(u) state.session = u; else localStorage.removeItem(SESSION_KEY);
+          if(u){ state.session = u; resetInactivityTimers(); } else localStorage.removeItem(SESSION_KEY);
         }
       }catch(e){}
     }
@@ -361,6 +406,7 @@
     state.loginPickedId = null;
     state.tab = 'dashboard';
     try{ localStorage.setItem(SESSION_KEY, user.id); }catch(e){}
+    resetInactivityTimers();
     render();
   }
   function renderLogin(){
@@ -400,7 +446,9 @@
   }
   function logout(){
     state.session = null; state.loginPickedId = null; state.tab = 'dashboard';
+    state.reportsView = null; state.moreSheetOpen = false; state.transferWizard = null;
     try{ localStorage.removeItem(SESSION_KEY); }catch(e){}
+    stopInactivityTimers();
     render();
   }
 
@@ -416,7 +464,7 @@
       const b = document.createElement('button');
       b.className = 'navbtn' + (state.tab===t.id ? ' active':'');
       b.innerHTML = `<span class="dot"></span>${t.label}`;
-      b.onclick = ()=>{ state.tab=t.id; render(); };
+      b.onclick = ()=>{ if(t.id==='reports') state.reportsView=null; state.tab=t.id; render(); };
       sbEl.appendChild(b);
     });
     const foot = document.createElement('div');
@@ -426,24 +474,58 @@
     sbEl.appendChild(foot);
     document.getElementById('logoutBtnSide').onclick = logout;
 
+    // Fixed 5-item mobile nav: Home | Inventory | Transfer | Closing | More
+    const NAV_ICONS = {dashboard:'⌂', inventory:'▤', transfer:'⇄', closing:'✓'};
+    const primaryIds = ['dashboard','inventory','transfer','closing'];
+    const primary = primaryIds.filter(id=>tabs.some(t=>t.id===id)).map(id=>tabs.find(t=>t.id===id));
+    const moreTabs = tabs.filter(t=>!primaryIds.includes(t.id));
+
     const bn = document.getElementById('bottomnav');
     bn.innerHTML='';
-    let activeBtn = null;
-    tabs.forEach(t=>{
+    const labelOverride = {dashboard:'Home', inventory:'Inventory', transfer:'Transfer', closing:'Closing'};
+    primary.forEach(t=>{
       const b = document.createElement('button');
-      b.className = state.tab===t.id ? 'active':'';
-      b.innerHTML = `<span class="dot"></span>${t.label}`;
-      b.onclick = ()=>{ state.tab=t.id; render(); };
-      if(state.tab===t.id) activeBtn = b;
+      b.className = (state.tab===t.id && !state.moreSheetOpen) ? 'active':'';
+      b.innerHTML = `<span class="navicon">${NAV_ICONS[t.id]||''}</span><span>${labelOverride[t.id]||t.label}</span>`;
+      b.onclick = ()=>{ state.tab=t.id; state.moreSheetOpen=false; render(); };
       bn.appendChild(b);
     });
-    const lb = document.createElement('button');
-    lb.innerHTML = `<span class="dot"></span>Log out`;
-    lb.onclick = logout;
-    bn.appendChild(lb);
-    if(activeBtn){
-      requestAnimationFrame(()=>{ activeBtn.scrollIntoView({behavior:'auto', inline:'center', block:'nearest'}); });
+    if(moreTabs.length){
+      const moreBtn = document.createElement('button');
+      const moreActive = state.moreSheetOpen || moreTabs.some(t=>t.id===state.tab);
+      moreBtn.className = moreActive ? 'active':'';
+      moreBtn.innerHTML = `<span class="navicon">⋯</span><span>More</span>`;
+      moreBtn.onclick = ()=>{ state.moreSheetOpen = true; render(); };
+      bn.appendChild(moreBtn);
     }
+
+    if(state.moreSheetOpen){ renderMoreSheet(moreTabs); }
+    else if(document.getElementById('moreOverlay')){ document.getElementById('modalRoot').innerHTML=''; }
+  }
+  function renderMoreSheet(moreTabs){
+    const root = document.getElementById('modalRoot');
+    root.innerHTML = `
+      <div class="overlay" id="moreOverlay" style="align-items:flex-end;">
+        <div class="modal" style="max-width:520px; width:100%; border-radius:16px 16px 0 0; padding-bottom:28px;">
+          <div style="width:36px;height:4px;background:var(--line);border-radius:3px;margin:0 auto 14px;"></div>
+          ${moreTabs.map(t=>`<button class="navbtn" data-more="${t.id}" style="font-size:15.5px; padding:15px 12px;"><span class="dot"></span>${t.label}</button>`).join('')}
+          <div style="border-top:1px solid var(--line); margin-top:8px; padding-top:8px;">
+            <button class="navbtn" id="moreLogout" style="font-size:15.5px; padding:15px 12px; color:var(--bad);"><span class="dot"></span>Log out</button>
+          </div>
+        </div>
+      </div>`;
+    document.getElementById('moreOverlay').onclick = (e)=>{
+      if(e.target.id==='moreOverlay'){ state.moreSheetOpen=false; document.getElementById('modalRoot').innerHTML=''; render(); }
+    };
+    root.querySelectorAll('[data-more]').forEach(b=>{
+      b.onclick = ()=>{
+        if(b.dataset.more==='reports') state.reportsView=null;
+        state.tab=b.dataset.more; state.moreSheetOpen=false;
+        document.getElementById('modalRoot').innerHTML='';
+        render();
+      };
+    });
+    document.getElementById('moreLogout').onclick = ()=>{ document.getElementById('modalRoot').innerHTML=''; logout(); };
   }
   function renderTopbar(){
     return `<div class="topbar">
@@ -489,8 +571,24 @@
         <div class="stat"><div class="label">Daily inventory (bottles)</div><div class="value mono">${dailyTotal}</div></div>
         <div class="stat"><div class="label">Outstanding credit</div><div class="value warn">${fmt(totalOutstandingCredit())}</div></div>
       </div></div>
-      ${state.session.role==='owner' ? `<div class="card"><h3>Recent closings</h3>${renderRecentHistoryTable()}</div>` : ''}
+      ${state.session.role==='owner' ? `<div class="card"><h3>Yesterday's closing</h3>${renderYesterdayClosing(bDate)}</div>` : ''}
     `;
+    const viewBtn = document.getElementById('viewYesterdayInReports');
+    if(viewBtn) viewBtn.onclick = ()=>{ state.tab='reports'; state.reportsView='daily'; render(); };
+  }
+  function renderYesterdayClosing(bDate){
+    const yDate = localISO(new Date(new Date(bDate+'T00:00:00').getTime() - 86400000));
+    const rec = state.history.find(h=>h.date===yDate);
+    if(!rec) return `<p style="color:var(--text-dim); font-size:12.5px; margin-bottom:4px;">${fmtDate(yDate)}</p><div class="empty">No closing recorded for that day.</div>`;
+    const cls = rec.status==='MATCHED'?'good':(rec.status==='SHORTAGE'?'bad':'warn');
+    return `<p style="color:var(--text-dim); font-size:12.5px; margin-bottom:10px;">${fmtDate(yDate)}</p>
+      <div class="row">
+        <div class="stat"><div class="label">Expected</div><div class="value">${fmt(rec.totalExpected)}</div></div>
+        <div class="stat"><div class="label">Collected</div><div class="value">${fmt(rec.totalCollected)}</div></div>
+        <div class="stat"><div class="label">Credit given</div><div class="value warn">${fmt(rec.credit)}</div></div>
+        <div class="stat"><div class="label">Status</div><div class="value ${cls}" style="font-size:16px;">${rec.status}</div></div>
+      </div>
+      <button class="btn secondary" id="viewYesterdayInReports" style="margin-top:14px;">View in Reports</button>`;
   }
   function renderRecentHistoryTable(){
     const recent = [...state.history].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,7);
@@ -504,6 +602,7 @@
 
   // ---------- PRODUCTS ----------
   function renderProducts(){
+    if(isMobile()){ renderProductsMobile(); return; }
     const main = document.getElementById('main');
     main.innerHTML = renderTopbar() + `
       <div class="pagehead"><h1>Products</h1><p>Each bottle size is tracked as its own product.</p></div>
@@ -530,6 +629,58 @@
     document.getElementById('addProductBtn').onclick = ()=>openProductModal(null);
     main.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>openProductModal(b.dataset.edit));
     main.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>deleteProduct(b.dataset.del));
+  }
+  function renderProductsMobile(){
+    const main = document.getElementById('main');
+    main.innerHTML = renderTopbar() + `
+      <div class="pagehead"><h1>Products</h1></div>
+      <div class="card">
+        <button class="btn" id="addProductBtn" style="width:100%; margin-bottom:12px;">+ Add Product</button>
+        <input type="text" id="productSearchInput" placeholder="🔍 Search products…" value="${state.productSearch||''}">
+      </div>
+      <div class="card" style="padding:4px 8px;" id="productListWrap">${productListHTML()}</div>
+    `;
+    document.getElementById('addProductBtn').onclick = ()=>openProductModal(null);
+    document.getElementById('productSearchInput').oninput = (e)=>{
+      state.productSearch = e.target.value;
+      document.getElementById('productListWrap').innerHTML = productListHTML();
+      bindProductListHandlers();
+    };
+    bindProductListHandlers();
+  }
+  function productListHTML(){
+    const search = (state.productSearch||'').toLowerCase();
+    const list = state.products.filter(p=>!search || productLabel(p).toLowerCase().includes(search) || (p.brand||'').toLowerCase().includes(search));
+    if(!list.length) return `<div class="empty">No products found.</div>`;
+    return list.map(p=>`
+      <div class="listrow" data-openproduct="${p.id}">
+        <div class="listrow-title">${productLabel(p)}${p.brand?` <span style="color:var(--text-dim); font-weight:400;">— ${p.brand}</span>`:''}</div>
+        <span class="chev">›</span>
+      </div>`).join('');
+  }
+  function bindProductListHandlers(){
+    document.querySelectorAll('[data-openproduct]').forEach(r=>r.onclick=()=>openProductDetailModal(r.dataset.openproduct));
+  }
+  function openProductDetailModal(id){
+    const p = productById(id);
+    if(!p) return;
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="overlay"><div class="modal">
+        <h3>${productLabel(p)}</h3>
+        <div class="detailrow"><span>Brand</span><b>${p.brand||'—'}</b></div>
+        <div class="detailrow"><span>Category</span><b>${p.category||'—'}</b></div>
+        <div class="detailrow"><span>Size</span><b>${p.size||'—'}</b></div>
+        <div class="detailrow"><span>Unit</span><b>${p.unit||'—'}</b></div>
+        <div class="detailrow"><span>Purchase price</span><b>${fmt(p.purchase_price)}</b></div>
+        <div class="detailrow"><span>Selling price (single)</span><b>${fmt(p.selling_price)}</b></div>
+        <div class="detailrow"><span>Bulk price</span><b>${p.bulk_enabled ? fmt(p.bulk_price) : '—'}</b></div>
+        <div class="actions">
+          <button class="btn danger" id="pd_delete">Delete</button>
+          <button class="btn" id="pd_edit">Edit</button>
+        </div>
+      </div></div>`;
+    document.getElementById('pd_edit').onclick = ()=>openProductModal(id);
+    document.getElementById('pd_delete').onclick = ()=>deleteProduct(id);
   }
   function openProductModal(id){
     const p = id ? productById(id) : {id:null, name:'', brand:'', category:'', size:'', unit:'Bottle', purchase_price:'', selling_price:'', bulk_enabled:false, bulk_price:''};
@@ -588,27 +739,57 @@
     if(!confirm('Remove this product? Its stock history will also be removed.')) return;
     const {error} = await sb.from('products').delete().eq('id', id);
     if(error){ toast('Delete failed: '+error.message); return; }
+    closeModal();
     await loadAll();
   }
   function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
 
-  // ---------- MAIN STORAGE ----------
-  function renderMainStorage(){
+  // ---------- INVENTORY (Main Storage + Daily Inventory, combined nav) ----------
+  function renderInventory(){
     const main = document.getElementById('main');
+    if(state.session.role !== 'owner'){
+      main.innerHTML = renderTopbar() + `
+        <div class="pagehead"><h1>Daily Inventory</h1><p>Stock currently available for sale at the bar.</p></div>
+        ${dailyInventoryContent()}`;
+      return;
+    }
+    const sub = state.inventorySubTab || 'main';
     main.innerHTML = renderTopbar() + `
-      <div class="pagehead"><h1>Main storage</h1><p>Your overall bulk stock. Add new stock here when it arrives.</p></div>
-      <div class="card">
-        <div class="row" style="justify-content:space-between; align-items:center;">
-          <h3 style="margin:0;">Available stock</h3><button class="btn" id="addStockBtn" ${state.products.length?'':'disabled'}>Add stock</button>
-        </div>
-        <div class="tablewrap" style="margin-top:14px;">
-        ${state.products.length ? `<table class="mobile-cards"><thead><tr><th>Product</th><th class="num">Available quantity</th></tr></thead>
-          <tbody>${state.products.map(p=>`<tr><td data-label="Product">${productLabel(p)}</td><td class="num" data-label="Available">${p.main_stock||0}</td></tr>`).join('')}</tbody>
-        </table>` : `<div class="empty">Add products first, then record stock here.</div>`}
-        </div>
+      <div class="pagehead"><h1>Inventory</h1><p>Main Storage is your bulk stock; Daily Inventory is what's available at the bar right now.</p></div>
+      <div class="segctl">
+        <button class="btn ${sub==='main'?'':'secondary'}" id="invTabMain">Main Storage</button>
+        <button class="btn ${sub==='daily'?'':'secondary'}" id="invTabDaily">Daily Inventory</button>
       </div>
+      <div id="invContent">${sub==='main' ? mainStorageContent() : dailyInventoryContent()}</div>
     `;
-    if(state.products.length) document.getElementById('addStockBtn').onclick = openAddStockModal;
+    document.getElementById('invTabMain').onclick = ()=>{ state.inventorySubTab='main'; render(); };
+    document.getElementById('invTabDaily').onclick = ()=>{ state.inventorySubTab='daily'; render(); };
+    if(sub==='main') bindMainStorageHandlers();
+  }
+  function mainStorageContent(){
+    return `<div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <h3 style="margin:0;">Available stock</h3><button class="btn" id="addStockBtn" ${state.products.length?'':'disabled'}>Add stock</button>
+      </div>
+      <div class="tablewrap" style="margin-top:14px;">
+      ${state.products.length ? `<table class="mobile-cards"><thead><tr><th>Product</th><th class="num">Available quantity</th></tr></thead>
+        <tbody>${state.products.map(p=>`<tr><td data-label="Product">${productLabel(p)}</td><td class="num" data-label="Available">${p.main_stock||0}</td></tr>`).join('')}</tbody>
+      </table>` : `<div class="empty">Add products first, then record stock here.</div>`}
+      </div>
+    </div>`;
+  }
+  function bindMainStorageHandlers(){
+    const btn = document.getElementById('addStockBtn');
+    if(btn) btn.onclick = openAddStockModal;
+  }
+  function dailyInventoryContent(){
+    return `<div class="card">
+      <div class="tablewrap">
+      ${state.products.length ? `<table class="mobile-cards"><thead><tr><th>Product</th><th class="num">Quantity</th><th class="num">Selling price</th></tr></thead>
+      <tbody>${state.products.map(p=>`<tr><td data-label="Product">${productLabel(p)}</td><td class="num" data-label="Quantity">${p.daily_stock||0}</td><td class="num" data-label="Price">${fmt(p.selling_price)}</td></tr>`).join('')}</tbody>
+      </table>` : `<div class="empty">No products yet.</div>`}
+      </div>
+    </div>`;
   }
   function openAddStockModal(){
     document.getElementById('modalRoot').innerHTML = `
@@ -742,21 +923,6 @@
         const t = new Date(b.created_at).toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'});
         return `<tr><td data-label="Time">${t}</td><td data-label="User">${b.created_by||'—'}</td><td data-label="Items">${items||'—'}</td></tr>`;
       }).join('')}</tbody></table></div>`;
-  }
-
-  // ---------- DAILY INVENTORY ----------
-  function renderDailyInv(){
-    const main = document.getElementById('main');
-    main.innerHTML = renderTopbar() + `
-      <div class="pagehead"><h1>Daily inventory</h1><p>Stock currently available for sale at the bar.</p></div>
-      <div class="card">
-        <div class="tablewrap">
-        ${state.products.length ? `<table class="mobile-cards"><thead><tr><th>Product</th><th class="num">Quantity</th><th class="num">Selling price</th></tr></thead>
-        <tbody>${state.products.map(p=>`<tr><td data-label="Product">${productLabel(p)}</td><td class="num" data-label="Quantity">${p.daily_stock||0}</td><td class="num" data-label="Price">${fmt(p.selling_price)}</td></tr>`).join('')}</tbody>
-        </table>` : `<div class="empty">No products yet.</div>`}
-        </div>
-      </div>
-    `;
   }
 
   // ---------- DAILY CLOSING ----------
@@ -1103,34 +1269,69 @@
   // ---------- CREDIT / TABS ----------
   function renderCredit(){
     const main = document.getElementById('main');
-    const search = (main.dataset.creditSearch || '').toLowerCase();
-    const usersWithBalance = state.creditUsers.map(u=>({u, bal: creditBalance(u.id)}));
-    const filtered = usersWithBalance.filter(x=>!search || x.u.name.toLowerCase().includes(search));
-    filtered.sort((a,b)=>b.bal - a.bal);
-
     main.innerHTML = renderTopbar() + `
       <div class="pagehead"><h1>Credit / Tabs</h1><p>One running balance per person. Full history is kept underneath.</p></div>
       <div class="card"><div class="row">
         <div class="stat"><div class="label">Total outstanding</div><div class="value warn">${fmt(totalOutstandingCredit())}</div></div>
-        <div class="stat"><div class="label">People with a tab</div><div class="value mono">${usersWithBalance.filter(x=>x.bal>0).length}</div></div>
+        <div class="stat"><div class="label">People with a tab</div><div class="value mono">${state.creditUsers.filter(u=>creditBalance(u.id)>0).length}</div></div>
       </div></div>
       <div class="card">
-        <div class="row" style="justify-content:space-between; align-items:center;">
-          <h3 style="margin:0;">People</h3><button class="btn" id="addCreditBtn">Add credit</button>
+        <div class="row" style="gap:8px;">
+          <button class="btn" id="addCreditBtn" style="flex:1;">+ Add Credit</button>
+          <button class="btn secondary" id="recordRepaymentBtn" style="flex:1;">Record Repayment</button>
         </div>
-        <div class="field" style="margin-top:10px;"><input type="text" id="creditSearch" placeholder="Search a person…" value="${main.dataset.creditSearch||''}"></div>
-        <div class="tablewrap" style="margin-top:8px;">
-          ${filtered.length ? `<table class="mobile-cards"><thead><tr><th>Person</th><th class="num">Outstanding</th><th></th></tr></thead>
-            <tbody>${filtered.map(x=>`
-              <tr><td data-label="Person">${x.u.name}</td><td class="num" data-label="Outstanding">${fmt(x.bal)}</td>
-                <td data-label=""><button class="iconbtn" data-view="${x.u.id}">View history</button></td></tr>`).join('')}
-            </tbody></table>` : `<div class="empty">No credit records yet.</div>`}
-        </div>
+        <input type="text" id="creditSearch" placeholder="🔍 Search a person…" value="${state.creditSearch||''}" style="margin-top:12px;">
       </div>
+      <div class="card" style="padding:4px 8px;" id="creditListWrap">${creditPeopleListHTML()}</div>
     `;
-    document.getElementById('creditSearch').oninput = (e)=>{ main.dataset.creditSearch = e.target.value; renderCredit(); document.getElementById('creditSearch').focus(); };
+    document.getElementById('creditSearch').oninput = (e)=>{
+      state.creditSearch = e.target.value;
+      document.getElementById('creditListWrap').innerHTML = creditPeopleListHTML();
+      bindCreditListHandlers();
+    };
     document.getElementById('addCreditBtn').onclick = openAddCreditModal;
-    main.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>openCreditUserModal(b.dataset.view));
+    document.getElementById('recordRepaymentBtn').onclick = openRecordRepaymentFlow;
+    bindCreditListHandlers();
+  }
+  function creditPeopleListHTML(){
+    const search = (state.creditSearch||'').toLowerCase();
+    const filtered = state.creditUsers.map(u=>({u, bal: creditBalance(u.id)}))
+      .filter(x=>!search || x.u.name.toLowerCase().includes(search))
+      .sort((a,b)=>b.bal - a.bal);
+    if(!filtered.length) return `<div class="empty">No credit records yet.</div>`;
+    return filtered.map(x=>`
+      <div class="listrow" data-view="${x.u.id}">
+        <div class="listrow-title">${x.u.name}</div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <b class="mono" style="color:${x.bal>0?'var(--warn)':'var(--text-dim)'};">${fmt(x.bal)}</b>
+          <span class="chev">›</span>
+        </div>
+      </div>`).join('');
+  }
+  function bindCreditListHandlers(){
+    document.querySelectorAll('#creditListWrap [data-view]').forEach(b=>b.onclick=()=>openCreditUserModal(b.dataset.view));
+  }
+  function openRecordRepaymentFlow(){
+    const withBalance = state.creditUsers.map(u=>({u, bal:creditBalance(u.id)})).filter(x=>x.bal>0).sort((a,b)=>b.bal-a.bal);
+    if(!withBalance.length){ toast('No outstanding credit to collect'); return; }
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="overlay"><div class="modal">
+        <h3>Record repayment</h3>
+        <div class="field"><label>Select person</label>
+          <select id="rp_person">${withBalance.map(x=>`<option value="${x.u.id}">${x.u.name} — ${fmt(x.bal)}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>Repayment amount ₹</label><input type="number" inputmode="decimal" id="rp_amount" value="${withBalance[0].bal}"></div>
+        <div class="actions"><button class="btn secondary" id="rp_cancel">Cancel</button><button class="btn" id="rp_next">Continue</button></div>
+      </div></div>`;
+    const sel = document.getElementById('rp_person');
+    sel.onchange = ()=>{ const x=withBalance.find(w=>w.u.id===sel.value); document.getElementById('rp_amount').value = x.bal; };
+    document.getElementById('rp_cancel').onclick = closeModal;
+    document.getElementById('rp_next').onclick = ()=>{
+      const amount = parseFloat(document.getElementById('rp_amount').value);
+      if(!amount || amount<=0){ toast('Enter a valid amount'); return; }
+      const u = creditUserById(sel.value);
+      openRepaymentConfirm(u, amount);
+    };
   }
 
   function openAddCreditModal(){
@@ -1258,73 +1459,142 @@
 
   // ---------- REPORTS ----------
   function renderReports(){
+    if(isMobile()){ renderReportsMobile(); return; }
     const main = document.getElementById('main');
-    const dates = [...new Set(state.history.map(h=>h.date))].sort((a,b)=>b.localeCompare(a));
     main.innerHTML = renderTopbar() + `
       <div class="pagehead"><h1>Reports</h1><p>Historical stock and settlement records.</p></div>
-      <div class="card"><h3>Daily report</h3>
-        ${dates.length ? `<div class="field" style="max-width:220px;"><label>Select date</label>
-          <select id="reportDate">${dates.map(d=>`<option value="${d}">${fmtDate(d)}</option>`).join('')}</select></div>
-          <div id="dailyReportBody"></div>` : `<div class="empty">No finalized days yet.</div>`}
-      </div>
+      <div class="card"><h3>Daily report</h3>${dailyReportSectionHTML()}</div>
       <div class="card"><h3>Transfer history</h3>${renderTransferHistory()}</div>
-      <div class="card"><h3>Inventory report</h3>
-        <div class="grid2">
-          <div><h3 style="font-size:13px; color:var(--text-dim); margin-bottom:8px;">Main storage</h3>
-            <div class="tablewrap">${state.products.length ? `<table class="mobile-cards"><tbody>${state.products.map(p=>`<tr><td data-label="Product">${productLabel(p)}</td><td class="num" data-label="Qty">${p.main_stock||0}</td></tr>`).join('')}</tbody></table>` : `<div class="empty">—</div>`}</div></div>
-          <div><h3 style="font-size:13px; color:var(--text-dim); margin-bottom:8px;">Daily inventory</h3>
-            <div class="tablewrap">${state.products.length ? `<table class="mobile-cards"><tbody>${state.products.map(p=>`<tr><td data-label="Product">${productLabel(p)}</td><td class="num" data-label="Qty">${p.daily_stock||0}</td></tr>`).join('')}</tbody></table>` : `<div class="empty">—</div>`}</div></div>
-        </div>
-      </div>
+      <div class="card"><h3>Inventory report</h3>${inventoryReportSectionHTML()}</div>
       <div class="card"><h3>Product sales report</h3>${renderProductSalesReport()}</div>
-      <div class="card">
-        <div class="row" style="justify-content:space-between; align-items:center;"><h3 style="margin:0;">Collection report</h3>
-          <div class="row" style="gap:8px;"><button class="btn secondary" id="exportCollectionXlsx">Export Excel</button><button class="btn secondary" id="exportCollectionPdf">Export PDF</button></div>
-        </div>
-        <div class="tablewrap" style="margin-top:10px;">
-        ${state.history.length ? `<table class="mobile-cards"><thead><tr><th>Date</th><th class="num">Expected</th><th class="num">Cash</th><th class="num">UPI</th><th class="num">Card</th><th class="num">Credit given</th><th class="num">Credit collected</th><th>Status</th></tr></thead>
-        <tbody>${[...state.history].sort((a,b)=>b.date.localeCompare(a.date)).map(h=>{
-          const cls = h.status==='MATCHED'?'good':(h.status==='SHORTAGE'?'bad':'warn');
-          const cc = creditCollectedForDate(h.date);
-          return `<tr><td data-label="Date">${fmtDate(h.date)}</td><td class="num" data-label="Expected">${fmt(h.totalExpected)}</td><td class="num" data-label="Cash">${fmt(h.cash)}</td><td class="num" data-label="UPI">${fmt(h.upi)}</td><td class="num" data-label="Card">${fmt(h.card)}</td><td class="num" data-label="Credit given">${fmt(h.credit)}</td><td class="num" data-label="Credit collected">${fmt(cc.total)}</td><td data-label="Status"><span class="badge ${cls}">${h.status}</span></td></tr>`;
-        }).join('')}</tbody></table>` : `<div class="empty">No finalized days yet.</div>`}
-        </div>
-      </div>
+      <div class="card"><h3>Collection report</h3>${collectionReportSectionHTML()}</div>
+      <div class="card"><h3>Credit report</h3>${creditReportSectionHTML()}</div>
     `;
-    if(dates.length){
-      const sel = document.getElementById('reportDate');
-      const renderDay = ()=>{
-        const rec = state.history.find(h=>h.date===sel.value);
-        const cls = rec.status==='MATCHED'?'good':(rec.status==='SHORTAGE'?'bad':'warn');
-        const editable = state.session.role==='owner' && closingEditableDate(rec.date);
-        document.getElementById('dailyReportBody').innerHTML = `
-          <div class="tablewrap"><table class="mobile-cards" style="margin-top:12px;"><thead><tr><th>Product</th><th class="num">Available</th><th class="num">Closing</th><th class="num">Sold</th><th class="num">Bulk sold</th><th class="num">Price</th><th class="num">Sales</th></tr></thead>
-          <tbody>${rec.records.map(r=>`<tr><td data-label="Product">${r.name}</td><td class="num" data-label="Available">${r.available}</td><td class="num" data-label="Closing">${r.remaining}</td><td class="num" data-label="Sold">${r.sold}</td><td class="num" data-label="Bulk sold">${r.bulkSold||0}</td><td class="num" data-label="Price">${fmt(r.sellingPrice)}</td><td class="num" data-label="Sales">${fmt(r.expected)}</td></tr>`).join('')}</tbody></table></div>
-          <div class="row" style="margin-top:12px;">
-            <div class="stat"><div class="label">Total expected</div><div class="value">${fmt(rec.totalExpected)}</div></div>
-            <div class="stat"><div class="label">Cash+UPI+Card</div><div class="value">${fmt(rec.totalCollected)}</div></div>
-            <div class="stat"><div class="label">Credit given</div><div class="value warn">${fmt(rec.credit)}</div></div>
-            <div class="stat"><div class="label">Status</div><div class="value ${cls}" style="font-size:16px;">${rec.status}</div></div>
-          </div>
-          ${rec.closedBy ? `<p style="color:var(--text-dim); font-size:12px; margin-top:10px;">Closed by ${rec.closedBy}</p>` : ''}
-          <div class="row" style="margin-top:14px; gap:8px;">
-            ${editable ? `<button class="btn secondary" id="editClosingBtn">Edit this closing</button>` : ''}
-            <button class="btn secondary" id="exportDailyXlsx">Export Excel</button>
-            <button class="btn secondary" id="exportDailyPdf">Export PDF</button>
-          </div>
-          ${!editable ? `<p style="color:var(--text-dim); font-size:11.5px; margin-top:8px;">Locked — a later business day's closing has already started.</p>` : ''}
-        `;
-        const editBtn = document.getElementById('editClosingBtn');
-        if(editBtn) editBtn.onclick = ()=>openEditClosingModal(rec);
-        document.getElementById('exportDailyXlsx').onclick = ()=>exportDailyReportExcel(rec);
-        document.getElementById('exportDailyPdf').onclick = ()=>exportDailyReportPDF(rec);
-      };
-      sel.onchange = renderDay; renderDay();
+    bindDailyReportSection();
+    bindCollectionReportSection();
+  }
+  function reportTitle(view){
+    return {daily:'Daily Report', inventory:'Inventory Report', transfers:'Transfer History', collection:'Collection Report', credit:'Credit Report', productsales:'Product Sales Report'}[view] || 'Report';
+  }
+  function renderReportsMobile(){
+    const main = document.getElementById('main');
+    const view = state.reportsView;
+    if(!view){
+      const items = [
+        {id:'daily', label:'Daily Report'},
+        {id:'inventory', label:'Inventory Report'},
+        {id:'transfers', label:'Transfer History'},
+        {id:'collection', label:'Collection Report'},
+        {id:'credit', label:'Credit Report'},
+        {id:'productsales', label:'Product Sales Report'},
+      ];
+      main.innerHTML = renderTopbar() + `
+        <div class="pagehead"><h1>Reports</h1></div>
+        <div class="card" style="padding:4px 8px;">
+          ${items.map(i=>`<div class="listrow" data-report="${i.id}"><div class="listrow-title">${i.label}</div><span class="chev">›</span></div>`).join('')}
+        </div>`;
+      main.querySelectorAll('[data-report]').forEach(r=>r.onclick=()=>{ state.reportsView=r.dataset.report; render(); });
+      return;
     }
+    main.innerHTML = renderTopbar() + `
+      <div class="pagehead" style="display:flex; align-items:center; gap:8px; margin-bottom:14px;">
+        <button class="iconbtn" id="reportsBack" style="font-size:20px; padding:4px 10px;">‹ Back</button>
+        <h1 style="font-size:19px;">${reportTitle(view)}</h1>
+      </div>
+      <div id="reportDetailWrap"></div>
+    `;
+    document.getElementById('reportsBack').onclick = ()=>{ state.reportsView=null; render(); };
+    renderReportDetail(view);
+  }
+  function renderReportDetail(view){
+    const wrap = document.getElementById('reportDetailWrap');
+    if(view==='daily') wrap.innerHTML = `<div class="card">${dailyReportSectionHTML()}</div>`;
+    else if(view==='inventory') wrap.innerHTML = `<div class="card">${inventoryReportSectionHTML()}</div>`;
+    else if(view==='transfers') wrap.innerHTML = `<div class="card">${renderTransferHistory()}</div>`;
+    else if(view==='collection') wrap.innerHTML = `<div class="card">${collectionReportSectionHTML()}</div>`;
+    else if(view==='credit') wrap.innerHTML = `<div class="card">${creditReportSectionHTML()}</div>`;
+    else if(view==='productsales') wrap.innerHTML = `<div class="card">${renderProductSalesReport()}</div>`;
+    if(view==='daily') bindDailyReportSection();
+    if(view==='collection') bindCollectionReportSection();
+  }
+  function dailyReportSectionHTML(){
+    const dates = [...new Set(state.history.map(h=>h.date))].sort((a,b)=>b.localeCompare(a));
+    if(!dates.length) return `<div class="empty">No finalized days yet.</div>`;
+    return `<div class="field" style="max-width:220px;"><label>Select date</label>
+        <select id="reportDate">${dates.map(d=>`<option value="${d}">${fmtDate(d)}</option>`).join('')}</select></div>
+        <div id="dailyReportBody"></div>`;
+  }
+  function bindDailyReportSection(){
+    const sel = document.getElementById('reportDate');
+    if(!sel) return;
+    const renderDay = ()=>{
+      const rec = state.history.find(h=>h.date===sel.value);
+      const cls = rec.status==='MATCHED'?'good':(rec.status==='SHORTAGE'?'bad':'warn');
+      const editable = state.session.role==='owner' && closingEditableDate(rec.date);
+      document.getElementById('dailyReportBody').innerHTML = `
+        <div class="tablewrap"><table class="mobile-cards" style="margin-top:12px;"><thead><tr><th>Product</th><th class="num">Available</th><th class="num">Closing</th><th class="num">Sold</th><th class="num">Bulk sold</th><th class="num">Price</th><th class="num">Sales</th></tr></thead>
+        <tbody>${rec.records.map(r=>`<tr><td data-label="Product">${r.name}</td><td class="num" data-label="Available">${r.available}</td><td class="num" data-label="Closing">${r.remaining}</td><td class="num" data-label="Sold">${r.sold}</td><td class="num" data-label="Bulk sold">${r.bulkSold||0}</td><td class="num" data-label="Price">${fmt(r.sellingPrice)}</td><td class="num" data-label="Sales">${fmt(r.expected)}</td></tr>`).join('')}</tbody></table></div>
+        <div class="row" style="margin-top:12px;">
+          <div class="stat"><div class="label">Total expected</div><div class="value">${fmt(rec.totalExpected)}</div></div>
+          <div class="stat"><div class="label">Cash+UPI+Card</div><div class="value">${fmt(rec.totalCollected)}</div></div>
+          <div class="stat"><div class="label">Credit given</div><div class="value warn">${fmt(rec.credit)}</div></div>
+          <div class="stat"><div class="label">Status</div><div class="value ${cls}" style="font-size:16px;">${rec.status}</div></div>
+        </div>
+        ${rec.closedBy ? `<p style="color:var(--text-dim); font-size:12px; margin-top:10px;">Closed by ${rec.closedBy}</p>` : ''}
+        <div class="row" style="margin-top:14px; gap:8px;">
+          ${editable ? `<button class="btn secondary" id="editClosingBtn">Edit this closing</button>` : ''}
+          <button class="btn secondary" id="exportDailyXlsx">Export Excel</button>
+          <button class="btn secondary" id="exportDailyPdf">Export PDF</button>
+        </div>
+        ${!editable ? `<p style="color:var(--text-dim); font-size:11.5px; margin-top:8px;">Locked — a later business day's closing has already started.</p>` : ''}
+      `;
+      const editBtn = document.getElementById('editClosingBtn');
+      if(editBtn) editBtn.onclick = ()=>openEditClosingModal(rec);
+      document.getElementById('exportDailyXlsx').onclick = ()=>exportDailyReportExcel(rec);
+      document.getElementById('exportDailyPdf').onclick = ()=>exportDailyReportPDF(rec);
+    };
+    sel.onchange = renderDay; renderDay();
+  }
+  function inventoryReportSectionHTML(){
+    return `<div class="grid2">
+      <div><h3 style="font-size:13px; color:var(--text-dim); margin-bottom:8px;">Main storage</h3>
+        <div class="tablewrap">${state.products.length ? `<table class="mobile-cards"><tbody>${state.products.map(p=>`<tr><td data-label="Product">${productLabel(p)}</td><td class="num" data-label="Qty">${p.main_stock||0}</td></tr>`).join('')}</tbody></table>` : `<div class="empty">—</div>`}</div></div>
+      <div><h3 style="font-size:13px; color:var(--text-dim); margin-bottom:8px;">Daily inventory</h3>
+        <div class="tablewrap">${state.products.length ? `<table class="mobile-cards"><tbody>${state.products.map(p=>`<tr><td data-label="Product">${productLabel(p)}</td><td class="num" data-label="Qty">${p.daily_stock||0}</td></tr>`).join('')}</tbody></table>` : `<div class="empty">—</div>`}</div></div>
+    </div>`;
+  }
+  function collectionReportSectionHTML(){
+    return `
+      <div class="row" style="justify-content:flex-end; gap:8px;">
+        <button class="btn secondary" id="exportCollectionXlsx">Export Excel</button><button class="btn secondary" id="exportCollectionPdf">Export PDF</button>
+      </div>
+      <div class="tablewrap" style="margin-top:10px;">
+      ${state.history.length ? `<table class="mobile-cards"><thead><tr><th>Date</th><th class="num">Expected</th><th class="num">Cash</th><th class="num">UPI</th><th class="num">Card</th><th class="num">Credit given</th><th class="num">Credit collected</th><th>Status</th></tr></thead>
+      <tbody>${[...state.history].sort((a,b)=>b.date.localeCompare(a.date)).map(h=>{
+        const cls = h.status==='MATCHED'?'good':(h.status==='SHORTAGE'?'bad':'warn');
+        const cc = creditCollectedForDate(h.date);
+        return `<tr><td data-label="Date">${fmtDate(h.date)}</td><td class="num" data-label="Expected">${fmt(h.totalExpected)}</td><td class="num" data-label="Cash">${fmt(h.cash)}</td><td class="num" data-label="UPI">${fmt(h.upi)}</td><td class="num" data-label="Card">${fmt(h.card)}</td><td class="num" data-label="Credit given">${fmt(h.credit)}</td><td class="num" data-label="Credit collected">${fmt(cc.total)}</td><td data-label="Status"><span class="badge ${cls}">${h.status}</span></td></tr>`;
+      }).join('')}</tbody></table>` : `<div class="empty">No finalized days yet.</div>`}
+      </div>`;
+  }
+  function bindCollectionReportSection(){
     const exXlsx = document.getElementById('exportCollectionXlsx');
     if(exXlsx) exXlsx.onclick = exportCollectionExcel;
     const exPdf = document.getElementById('exportCollectionPdf');
     if(exPdf) exPdf.onclick = exportCollectionPDF;
+  }
+  function creditReportSectionHTML(){
+    const rows = state.creditUsers.map(u=>({u, bal:creditBalance(u.id)})).sort((a,b)=>b.bal-a.bal);
+    const recentTx = [...state.creditTransactions].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).slice(0,50);
+    return `
+      <div class="row" style="margin-bottom:12px;"><div class="stat"><div class="label">Total outstanding</div><div class="value warn">${fmt(totalOutstandingCredit())}</div></div></div>
+      <h3 style="font-size:13px; color:var(--text-dim); margin-bottom:8px;">Balances by person</h3>
+      <div class="tablewrap">${rows.length ? `<table class="mobile-cards"><thead><tr><th>Person</th><th class="num">Outstanding</th></tr></thead>
+        <tbody>${rows.map(x=>`<tr><td data-label="Person">${x.u.name}</td><td class="num" data-label="Outstanding">${fmt(x.bal)}</td></tr>`).join('')}</tbody></table>` : `<div class="empty">No credit records yet.</div>`}</div>
+      <h3 style="font-size:13px; color:var(--text-dim); margin:16px 0 8px;">Recent transactions</h3>
+      <div class="tablewrap">${recentTx.length ? `<table class="mobile-cards"><thead><tr><th>Person</th><th>Date</th><th>Type</th><th class="num">Amount</th><th>Method</th><th>Status</th></tr></thead>
+        <tbody>${recentTx.map(t=>{ const u=creditUserById(t.credit_user_id); return `<tr><td data-label="Person">${u?u.name:'—'}</td><td data-label="Date">${fmtDate(t.business_date)}</td><td data-label="Type">${t.type==='given'?'Given':'Repaid'}${t.status==='reverted'?' (reverted)':''}</td><td class="num" data-label="Amount">${fmt(t.amount)}</td><td data-label="Method">${t.method?t.method.toUpperCase():'—'}</td><td data-label="Status">${t.status}</td></tr>`; }).join('')}</tbody></table>` : `<div class="empty">No transactions yet.</div>`}</div>
+    `;
   }
   function renderTransferHistory(){
     if(!state.transferBatches.length) return `<div class="empty">No transfers recorded yet.</div>`;
@@ -1486,9 +1756,8 @@
     switch(state.tab){
       case 'dashboard': renderDashboard(); break;
       case 'products': renderProducts(); break;
-      case 'mainstorage': renderMainStorage(); break;
+      case 'inventory': renderInventory(); break;
       case 'transfer': renderTransfer(); break;
-      case 'dailyinv': renderDailyInv(); break;
       case 'closing': renderClosing(); break;
       case 'credit': renderCredit(); break;
       case 'reports': renderReports(); break;
