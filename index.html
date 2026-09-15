@@ -313,6 +313,27 @@
     }
   });
 
+  // A main-tab switch (Home/Inventory/Transfer/Closing/Products/Credit/Reports/Users)
+  // ensures exactly one pending "return to Home" back-level exists whenever the
+  // current tab isn't Home — so the FIRST Back press from any main tab lands on
+  // Home, no matter which non-Home tabs were visited in between. Any deeper
+  // drill-down levels (opened afterwards) stack normally on top of this one, so
+  // Back still unwinds those first, only reaching Home once they're exhausted.
+  let homeBackPending = false;
+  function ensureHomeBackLevel(){
+    if(homeBackPending || state.tab==='dashboard') return;
+    homeBackPending = true;
+    pushNavLevel(()=>{ homeBackPending = false; state.tab = 'dashboard'; render(); });
+  }
+  function goToTab(tabId){
+    navBackStack = [];
+    homeBackPending = false;
+    if(tabId==='reports') state.reportsView = null;
+    state.tab = tabId;
+    ensureHomeBackLevel();
+    render();
+  }
+
   // ---------- helpers ----------
   function fmt(n){ n = Number(n)||0; return '₹' + n.toLocaleString('en-IN', {maximumFractionDigits:2}); }
   function localISO(d){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0'); return `${y}-${m}-${day}`; }
@@ -336,6 +357,27 @@
   }
   function productById(id){ return state.products.find(p=>p.id===id); }
   function productLabel(p){ return p ? p.name + (p.size ? ' ' + p.size : '') : 'Unknown product'; }
+  function hasBulkPricing(p){ return !!(p && p.bulk_enabled && Number(p.bulk_price) > 0); }
+  function anyBulkPricingConfigured(){ return state.products.some(hasBulkPricing); }
+  function findCreditUserByName(name){
+    const norm = (name||'').trim().toLowerCase();
+    if(!norm) return null;
+    return state.creditUsers.find(u=>u.name.trim().toLowerCase()===norm) || null;
+  }
+  function showDuplicateUserConfirm(existingUser, onYes, onNo){
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="overlay"><div class="modal">
+        <h3>A user with this name already exists</h3>
+        <p style="margin-bottom:6px;"><b>${existingUser.name}</b></p>
+        <p>Is this the same person?</p>
+        <div class="actions">
+          <button class="btn secondary" id="dup_no">No, different person</button>
+          <button class="btn" id="dup_yes">Yes, use existing user</button>
+        </div>
+      </div></div>`;
+    document.getElementById('dup_yes').onclick = onYes;
+    document.getElementById('dup_no').onclick = onNo;
+  }
   function visibleTabs(){ return state.session ? ALL_TABS.filter(t=>t.roles.includes(state.session.role)) : []; }
   function roleLabel(role){ return role==='owner' ? 'Owner' : 'Manager'; }
   function creditUserById(id){ return state.creditUsers.find(u=>u.id===id); }
@@ -516,6 +558,7 @@
     try{ localStorage.removeItem(SESSION_KEY); }catch(e){}
     stopInactivityWatch();
     navBackStack = [];
+    homeBackPending = false;
     document.getElementById('modalRoot').innerHTML = '';
     render();
   }
@@ -532,7 +575,7 @@
       const b = document.createElement('button');
       b.className = 'navbtn' + (state.tab===t.id ? ' active':'');
       b.innerHTML = `<span class="dot"></span>${t.label}`;
-      b.onclick = ()=>{ if(t.id==='reports') state.reportsView=null; state.tab=t.id; render(); };
+      b.onclick = ()=>goToTab(t.id);
       sbEl.appendChild(b);
     });
     const foot = document.createElement('div');
@@ -555,7 +598,7 @@
       const b = document.createElement('button');
       b.className = (state.tab===t.id && !state.moreSheetOpen) ? 'active':'';
       b.innerHTML = `<span class="navicon">${NAV_ICONS[t.id]||''}</span><span>${labelOverride[t.id]||t.label}</span>`;
-      b.onclick = ()=>{ state.tab=t.id; state.moreSheetOpen=false; render(); };
+      b.onclick = ()=>{ state.moreSheetOpen=false; goToTab(t.id); };
       bn.appendChild(b);
     });
     if(moreTabs.length){
@@ -590,9 +633,9 @@
     };
     root.querySelectorAll('[data-more]').forEach(b=>{
       b.onclick = ()=>{
-        if(b.dataset.more==='reports') state.reportsView=null;
-        state.tab=b.dataset.more;
-        goBackOneLevel(); // pops the level pushed when the sheet opened; onBack closes it and re-renders with the new tab already set
+        document.getElementById('modalRoot').innerHTML = '';
+        state.moreSheetOpen = false;
+        goToTab(b.dataset.more);
       };
     });
     document.getElementById('moreLogout').onclick = ()=>{ logout(); };
@@ -644,7 +687,7 @@
       ${state.session.role==='owner' ? `<div class="card"><h3>Yesterday's closing</h3>${renderYesterdayClosing(bDate)}</div>` : ''}
     `;
     const viewBtn = document.getElementById('viewYesterdayInReports');
-    if(viewBtn) viewBtn.onclick = ()=>{ state.tab='reports'; state.reportsView='daily'; render(); };
+    if(viewBtn) viewBtn.onclick = ()=>{ goToTab('reports'); state.reportsView='daily'; render(); };
   }
   function renderYesterdayClosing(bDate){
     const yDate = localISO(new Date(new Date(bDate+'T00:00:00').getTime() - 86400000));
@@ -1214,12 +1257,22 @@
 
   function renderSalesSummary(calc, d){
     if(!calc.allEntered) return `<div class="empty">Enter remaining quantity for every product to see the sales summary.</div>`;
-    return `<div class="tablewrap"><table class="mobile-cards"><thead><tr><th>Product</th><th class="num">Sold</th><th style="width:100px;">Bulk sold</th><th class="num">Single ₹</th><th class="num">Bulk ₹</th><th class="num">Expected</th></tr></thead>
-      <tbody>${calc.summaryRows.map(r=>`<tr><td data-label="Product">${productLabel(r.p)}</td><td class="num" data-label="Sold">${r.sold}</td>
-        <td data-label="Bulk sold">${r.p.bulk_enabled ? `<input type="number" inputmode="numeric" min="0" max="${r.sold}" data-bulk="${r.p.id}" value="${d.bulkSold[r.p.id]!==undefined?d.bulkSold[r.p.id]:''}">` : '—'}</td>
-        <td class="num" data-label="Single ₹">${fmt(r.p.selling_price)}</td>
-        <td class="num" data-label="Bulk ₹">${r.p.bulk_enabled ? fmt(r.p.bulk_price) : '—'}</td>
-        <td class="num" data-label="Expected" id="expected-${r.p.id}">${fmt(r.expected)}</td></tr>`).join('')}</tbody></table></div>
+    const showBulk = anyBulkPricingConfigured();
+    const head = showBulk
+      ? `<tr><th>Product</th><th class="num">Sold</th><th class="num">Single ₹</th><th style="width:100px;">Bulk Sold</th><th class="num">Bulk ₹</th><th class="num">Expected</th></tr>`
+      : `<tr><th>Product</th><th class="num">Sold</th><th class="num">Single ₹</th><th class="num">Expected</th></tr>`;
+    const rows = calc.summaryRows.map(r=>{
+      const bulkOnRow = hasBulkPricing(r.p);
+      const commonStart = `<td data-label="Product">${productLabel(r.p)}</td><td class="num" data-label="Sold">${r.sold}</td><td class="num" data-label="Single ₹">${fmt(r.p.selling_price)}</td>`;
+      const expectedCell = `<td class="num" data-label="Expected" id="expected-${r.p.id}">${fmt(r.expected)}</td>`;
+      if(!showBulk) return `<tr>${commonStart}${expectedCell}</tr>`;
+      const bulkSoldCell = bulkOnRow
+        ? `<td data-label="Bulk Sold"><input type="number" inputmode="numeric" min="0" max="${r.sold}" data-bulk="${r.p.id}" value="${d.bulkSold[r.p.id]!==undefined?d.bulkSold[r.p.id]:''}"></td>`
+        : `<td data-label="Bulk Sold">—</td>`;
+      const bulkPriceCell = `<td class="num" data-label="Bulk ₹">${bulkOnRow ? fmt(r.p.bulk_price) : '—'}</td>`;
+      return `<tr>${commonStart}${bulkSoldCell}${bulkPriceCell}${expectedCell}</tr>`;
+    }).join('');
+    return `<div class="tablewrap"><table class="mobile-cards"><thead>${head}</thead><tbody>${rows}</tbody></table></div>
       <div class="row" style="margin-top:12px;"><div class="stat"><div class="label">Total expected sales</div><div class="value" id="stat-total-expected-inline">${fmt(calc.totalExpected)}</div></div></div>`;
   }
 
@@ -1285,6 +1338,25 @@
     });
     document.querySelectorAll('[data-credit-newname]').forEach(inp=>{
       inp.oninput = ()=>{ d.credits[inp.dataset.creditNewname].person = inp.value; scheduleDraftSave(); };
+      inp.onblur = ()=>{
+        const i = inp.dataset.creditNewname;
+        if(d.credits[i].credit_user_id) return; // already resolved to an existing user
+        const name = (d.credits[i].person||'').trim();
+        if(!name) return;
+        const match = findCreditUserByName(name);
+        if(!match) return;
+        showDuplicateUserConfirm(match,
+          ()=>{
+            d.credits[i].credit_user_id = match.id;
+            d.credits[i].person = match.name;
+            closeModal();
+            document.getElementById('creditRows').innerHTML = renderCreditRows(d);
+            bindCreditRowHandlers();
+            patchClosing();
+          },
+          ()=>{ closeModal(); }
+        );
+      };
     });
     document.querySelectorAll('[data-credit-amount]').forEach(inp=>{
       inp.oninput = ()=>{ d.credits[inp.dataset.creditAmount].amount = inp.value; patchClosing(); };
@@ -1531,27 +1603,44 @@
       document.getElementById('ac_newname_wrap').style.display = e.target.value==='__new__' ? '' : 'none';
     };
     document.getElementById('cancelBtn').onclick = goBackOneLevel;
-    document.getElementById('saveBtn').onclick = async ()=>{
+    document.getElementById('saveBtn').onclick = ()=>{
       const amount = parseFloat(document.getElementById('ac_amount').value);
       if(!amount || amount<=0){ toast('Enter a valid amount'); return; }
-      let userId = document.getElementById('ac_select').value;
-      if(userId==='__new__'){
+      const note = document.getElementById('ac_note').value.trim() || null;
+      const selectVal = document.getElementById('ac_select').value;
+      if(selectVal==='__new__'){
         const name = document.getElementById('ac_newname').value.trim();
         if(!name){ toast('Enter a name'); return; }
-        const {data, error} = await sb.from('credit_users').insert({name}).select().single();
-        if(error){ toast('Failed: '+error.message); return; }
-        userId = data.id;
+        const match = findCreditUserByName(name);
+        if(match){
+          pushNavLevel(()=>openAddCreditModal());
+          showDuplicateUserConfirm(match,
+            ()=>{ navBackStack=[]; insertCreditGiven(match.id, amount, note); },
+            ()=>{ goBackOneLevel(); toast('Enter a different name to distinguish this person.'); }
+          );
+          return;
+        }
+        createNewCreditUserAndAdd(name, amount, note);
+      } else {
+        insertCreditGiven(selectVal, amount, note);
       }
-      const {error} = await sb.from('credit_transactions').insert({
-        credit_user_id: userId, type:'given', amount, business_date: businessDateISO(),
-        note: document.getElementById('ac_note').value.trim() || null, status:'active', recorded_by: state.session.name
-      });
-      if(error){ toast('Failed: '+error.message); return; }
-      toast('Credit added');
-      navBackStack = [];
-      closeModal();
-      await loadAll();
     };
+  }
+  async function insertCreditGiven(userId, amount, note){
+    const {error} = await sb.from('credit_transactions').insert({
+      credit_user_id: userId, type:'given', amount, business_date: businessDateISO(),
+      note, status:'active', recorded_by: state.session.name
+    });
+    if(error){ toast('Failed: '+error.message); return; }
+    toast('Credit added');
+    navBackStack = [];
+    closeModal();
+    await loadAll();
+  }
+  async function createNewCreditUserAndAdd(name, amount, note){
+    const {data, error} = await sb.from('credit_users').insert({name}).select().single();
+    if(error){ toast('Failed: '+error.message); return; }
+    await insertCreditGiven(data.id, amount, note);
   }
 
   function openCreditUserModal(userId){
