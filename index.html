@@ -217,34 +217,100 @@
   function isMobile(){ return window.innerWidth <= 820; }
 
   // ---------- inactivity timeout (15 min, warn at 13 min) ----------
+  // Uses a wall-clock timestamp (checked periodically + on tab-visible) rather than
+  // relying solely on setTimeout, because mobile browsers throttle/suspend timers
+  // in backgrounded tabs — a plain setTimeout can fire late (or effectively never
+  // until the user returns), which is why the previous version could stay logged
+  // in past 15 minutes.
+  const INACTIVITY_KEY = 'pegg.lastActivityAt';
   const INACTIVITY_WARNING_MS = 13*60*1000;
   const INACTIVITY_LIMIT_MS = 15*60*1000;
-  let inactivityWarnTimer=null, inactivityLogoutTimer=null, lastActivityReset=0;
-  function resetInactivityTimers(){
-    clearTimeout(inactivityWarnTimer); clearTimeout(inactivityLogoutTimer);
-    inactivityWarnTimer = setTimeout(()=>{
-      toast("You've been inactive for a while. Your session will expire soon.");
-    }, INACTIVITY_WARNING_MS);
-    inactivityLogoutTimer = setTimeout(()=>{
+  let inactivityCheckInterval = null;
+  let warnedThisIdlePeriod = false;
+  let lastActivityMarkThrottle = 0;
+
+  function markActivity(){
+    if(!state.session) return;
+    warnedThisIdlePeriod = false;
+    try{ localStorage.setItem(INACTIVITY_KEY, String(Date.now())); }catch(e){}
+  }
+  function getLastActivityAt(){
+    try{
+      const v = localStorage.getItem(INACTIVITY_KEY);
+      return v ? parseInt(v,10) : Date.now();
+    }catch(e){ return Date.now(); }
+  }
+  function checkInactivity(){
+    if(!state.session) return;
+    const idleMs = Date.now() - getLastActivityAt();
+    if(idleMs >= INACTIVITY_LIMIT_MS){
+      stopInactivityWatch();
       toast('Signed out due to inactivity.');
       logout();
-    }, INACTIVITY_LIMIT_MS);
+    } else if(idleMs >= INACTIVITY_WARNING_MS && !warnedThisIdlePeriod){
+      warnedThisIdlePeriod = true;
+      toast('Your session is about to expire due to inactivity.');
+    }
   }
-  function stopInactivityTimers(){ clearTimeout(inactivityWarnTimer); clearTimeout(inactivityLogoutTimer); }
+  function startInactivityWatch(){
+    markActivity();
+    stopInactivityWatch();
+    inactivityCheckInterval = setInterval(checkInactivity, 15000);
+  }
+  function stopInactivityWatch(){
+    if(inactivityCheckInterval) clearInterval(inactivityCheckInterval);
+    inactivityCheckInterval = null;
+  }
   function handleActivity(){
     if(!state.session) return;
     const now = Date.now();
-    if(now - lastActivityReset < 5000) return;
-    lastActivityReset = now;
-    resetInactivityTimers();
+    if(now - lastActivityMarkThrottle < 3000) return; // don't hammer localStorage
+    lastActivityMarkThrottle = now;
+    markActivity();
   }
-  ['click','keydown','touchstart','mousemove','scroll'].forEach(evt=>{
+  // Genuine interaction only — no mousemove/scroll, which can fire without real intent.
+  ['click','keydown','touchstart','pointerdown'].forEach(evt=>{
     document.addEventListener(evt, handleActivity, {passive:true});
   });
+  // Catches the case where the phone was locked/backgrounded for 15+ minutes:
+  // check immediately the moment the tab becomes visible again, rather than
+  // waiting on a possibly-delayed/suspended timer.
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState === 'visible' && state.session){ checkInactivity(); }
+  });
+
   let resizeTimer=null;
+  let lastIsMobile = isMobile();
   window.addEventListener('resize', ()=>{
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(()=>{ if(state.session) render(); }, 200);
+    resizeTimer = setTimeout(()=>{
+      const nowMobile = isMobile();
+      if(nowMobile !== lastIsMobile){
+        lastIsMobile = nowMobile;
+        if(state.session) render();
+      }
+    }, 200);
+  });
+
+  // ---------- in-app back navigation (hardware/gesture Back button) ----------
+  // Each drill-in (opening a detail modal, switching into an edit mode, moving to a
+  // wizard step, etc.) pushes a synthetic history entry with a matching "undo"
+  // callback. Both the hardware Back button (via popstate) and any in-app
+  // Back/Cancel button go through the SAME goBackOneLevel() -> history.back() path,
+  // so the two stay in sync and one Back press always undoes exactly one screen.
+  let navBackStack = [];
+  function pushNavLevel(onBack){
+    navBackStack.push(onBack);
+    try{ history.pushState({peggNav: navBackStack.length}, '', location.href); }catch(e){}
+  }
+  function goBackOneLevel(){
+    if(navBackStack.length){ history.back(); }
+  }
+  window.addEventListener('popstate', ()=>{
+    if(navBackStack.length){
+      const fn = navBackStack.pop();
+      if(fn) fn();
+    }
   });
 
   // ---------- helpers ----------
@@ -303,7 +369,7 @@
       {data: creditUsers, error: cuErr}, {data: creditTx, error: ctErr},
       {data: transferBatches, error: tbErr}
     ] = await Promise.all([
-      sb.from('products').select('*').order('name'),
+      sb.from('products').select('*').eq('active', true).order('name'),
       sb.from('app_users').select('*'),
       sb.from('closings').select('*, closing_line_items(*)').order('closing_date', {ascending:false}),
       sb.from('closing_draft').select('*').eq('id', true).maybeSingle(),
@@ -340,7 +406,7 @@
         const savedId = localStorage.getItem(SESSION_KEY);
         if(savedId){
           const u = state.users.find(x=>x.id===savedId);
-          if(u){ state.session = u; resetInactivityTimers(); } else localStorage.removeItem(SESSION_KEY);
+          if(u){ state.session = u; startInactivityWatch(); } else localStorage.removeItem(SESSION_KEY);
         }
       }catch(e){}
     }
@@ -406,7 +472,7 @@
     state.loginPickedId = null;
     state.tab = 'dashboard';
     try{ localStorage.setItem(SESSION_KEY, user.id); }catch(e){}
-    resetInactivityTimers();
+    startInactivityWatch();
     render();
   }
   function renderLogin(){
@@ -448,7 +514,9 @@
     state.session = null; state.loginPickedId = null; state.tab = 'dashboard';
     state.reportsView = null; state.moreSheetOpen = false; state.transferWizard = null;
     try{ localStorage.removeItem(SESSION_KEY); }catch(e){}
-    stopInactivityTimers();
+    stopInactivityWatch();
+    navBackStack = [];
+    document.getElementById('modalRoot').innerHTML = '';
     render();
   }
 
@@ -495,7 +563,10 @@
       const moreActive = state.moreSheetOpen || moreTabs.some(t=>t.id===state.tab);
       moreBtn.className = moreActive ? 'active':'';
       moreBtn.innerHTML = `<span class="navicon">⋯</span><span>More</span>`;
-      moreBtn.onclick = ()=>{ state.moreSheetOpen = true; render(); };
+      moreBtn.onclick = ()=>{
+        pushNavLevel(()=>{ state.moreSheetOpen=false; document.getElementById('modalRoot').innerHTML=''; render(); });
+        state.moreSheetOpen = true; render();
+      };
       bn.appendChild(moreBtn);
     }
 
@@ -515,17 +586,16 @@
         </div>
       </div>`;
     document.getElementById('moreOverlay').onclick = (e)=>{
-      if(e.target.id==='moreOverlay'){ state.moreSheetOpen=false; document.getElementById('modalRoot').innerHTML=''; render(); }
+      if(e.target.id==='moreOverlay'){ goBackOneLevel(); }
     };
     root.querySelectorAll('[data-more]').forEach(b=>{
       b.onclick = ()=>{
         if(b.dataset.more==='reports') state.reportsView=null;
-        state.tab=b.dataset.more; state.moreSheetOpen=false;
-        document.getElementById('modalRoot').innerHTML='';
-        render();
+        state.tab=b.dataset.more;
+        goBackOneLevel(); // pops the level pushed when the sheet opened; onBack closes it and re-renders with the new tab already set
       };
     });
-    document.getElementById('moreLogout').onclick = ()=>{ document.getElementById('modalRoot').innerHTML=''; logout(); };
+    document.getElementById('moreLogout').onclick = ()=>{ logout(); };
   }
   function renderTopbar(){
     return `<div class="topbar">
@@ -612,10 +682,10 @@
         </div>
         <div class="tablewrap" style="margin-top:14px;">
           ${state.products.length ? `<table class="mobile-cards"><thead><tr>
-            <th>Name</th><th>Brand</th><th>Category</th><th>Size</th><th class="num">Purchase ₹</th><th class="num">Single ₹</th><th class="num">Bulk ₹</th><th></th>
+            <th>Name</th><th>Category</th><th>Size</th><th class="num">Purchase ₹</th><th class="num">Single ₹</th><th class="num">Bulk ₹</th><th></th>
           </tr></thead><tbody>
           ${state.products.map(p=>`
-            <tr><td data-label="Name">${p.name}</td><td data-label="Brand">${p.brand||'—'}</td><td data-label="Category">${p.category||'—'}</td><td data-label="Size">${p.size||'—'}</td>
+            <tr><td data-label="Name">${p.name}</td><td data-label="Category">${p.category||'—'}</td><td data-label="Size">${p.size||'—'}</td>
               <td class="num" data-label="Purchase ₹">${fmt(p.purchase_price)}</td><td class="num" data-label="Single ₹">${fmt(p.selling_price)}</td>
               <td class="num" data-label="Bulk ₹">${p.bulk_enabled ? fmt(p.bulk_price) : '—'}</td>
               <td data-label="" style="text-align:right; white-space:nowrap;">
@@ -640,7 +710,7 @@
       </div>
       <div class="card" style="padding:4px 8px;" id="productListWrap">${productListHTML()}</div>
     `;
-    document.getElementById('addProductBtn').onclick = ()=>openProductModal(null);
+    document.getElementById('addProductBtn').onclick = ()=>{ pushNavLevel(closeModal); openProductModal(null); };
     document.getElementById('productSearchInput').oninput = (e)=>{
       state.productSearch = e.target.value;
       document.getElementById('productListWrap').innerHTML = productListHTML();
@@ -650,48 +720,125 @@
   }
   function productListHTML(){
     const search = (state.productSearch||'').toLowerCase();
-    const list = state.products.filter(p=>!search || productLabel(p).toLowerCase().includes(search) || (p.brand||'').toLowerCase().includes(search));
+    const list = state.products.filter(p=>!search || productLabel(p).toLowerCase().includes(search) || (p.category||'').toLowerCase().includes(search));
     if(!list.length) return `<div class="empty">No products found.</div>`;
     return list.map(p=>`
       <div class="listrow" data-openproduct="${p.id}">
-        <div class="listrow-title">${productLabel(p)}${p.brand?` <span style="color:var(--text-dim); font-weight:400;">— ${p.brand}</span>`:''}</div>
+        <div class="listrow-title">${productLabel(p)}</div>
         <span class="chev">›</span>
       </div>`).join('');
   }
   function bindProductListHandlers(){
     document.querySelectorAll('[data-openproduct]').forEach(r=>r.onclick=()=>openProductDetailModal(r.dataset.openproduct));
   }
+
+  // Entry point from the list — pushes one back-navigation level (Products <- Detail)
   function openProductDetailModal(id){
+    pushNavLevel(()=>{ closeModal(); });
+    showProductDetail(id, false);
+  }
+  function showProductDetail(id, editing){
     const p = productById(id);
-    if(!p) return;
+    if(!p){ closeModal(); return; }
+    if(!editing){
+      document.getElementById('modalRoot').innerHTML = `
+        <div class="overlay"><div class="modal">
+          <h3>${productLabel(p)}</h3>
+          <div class="detailrow"><span>Category</span><b>${p.category||'—'}</b></div>
+          <div class="detailrow"><span>Size</span><b>${p.size||'—'}</b></div>
+          <div class="detailrow"><span>Unit</span><b>${p.unit||'—'}</b></div>
+          <div class="detailrow"><span>Purchase price</span><b>${fmt(p.purchase_price)}</b></div>
+          <div class="detailrow"><span>Selling price (single)</span><b>${fmt(p.selling_price)}</b></div>
+          <div class="detailrow"><span>Bulk price</span><b>${p.bulk_enabled ? fmt(p.bulk_price) : '—'}</b></div>
+          <div class="actions"><button class="btn" id="pd_edit" style="width:100%;">Edit</button></div>
+        </div></div>`;
+      document.getElementById('pd_edit').onclick = ()=>{
+        pushNavLevel(()=>showProductDetail(id, false));
+        showProductDetail(id, true);
+      };
+      return;
+    }
+    // editing mode — same screen, becomes a form with Save/Cancel + Delete tucked below
     document.getElementById('modalRoot').innerHTML = `
       <div class="overlay"><div class="modal">
-        <h3>${productLabel(p)}</h3>
-        <div class="detailrow"><span>Brand</span><b>${p.brand||'—'}</b></div>
-        <div class="detailrow"><span>Category</span><b>${p.category||'—'}</b></div>
-        <div class="detailrow"><span>Size</span><b>${p.size||'—'}</b></div>
-        <div class="detailrow"><span>Unit</span><b>${p.unit||'—'}</b></div>
-        <div class="detailrow"><span>Purchase price</span><b>${fmt(p.purchase_price)}</b></div>
-        <div class="detailrow"><span>Selling price (single)</span><b>${fmt(p.selling_price)}</b></div>
-        <div class="detailrow"><span>Bulk price</span><b>${p.bulk_enabled ? fmt(p.bulk_price) : '—'}</b></div>
-        <div class="actions">
-          <button class="btn danger" id="pd_delete">Delete</button>
-          <button class="btn" id="pd_edit">Edit</button>
+        <h3>Edit product</h3>
+        <div class="field"><label>Product name</label><input type="text" id="f_name" value="${p.name}"></div>
+        <div class="field"><label>Category</label><input type="text" id="f_category" value="${p.category||''}" placeholder="Whisky / Beer"></div>
+        <div class="grid2">
+          <div class="field"><label>Bottle size</label><input type="text" id="f_size" value="${p.size||''}" placeholder="180ml"></div>
+          <div class="field"><label>Unit</label><input type="text" id="f_unit" value="${p.unit||'Bottle'}"></div>
         </div>
+        <div class="grid2">
+          <div class="field"><label>Purchase price (₹)</label><input type="number" inputmode="decimal" id="f_purchase" value="${p.purchase_price}"></div>
+          <div class="field"><label>Selling price (₹, single)</label><input type="number" inputmode="decimal" id="f_selling" value="${p.selling_price}"></div>
+        </div>
+        <div class="field" style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="f_bulk_enabled" style="width:auto; min-height:auto;" ${p.bulk_enabled?'checked':''}>
+          <label style="margin:0;">Also sold in bulk at a different price</label>
+        </div>
+        <div class="field" id="f_bulk_price_wrap" style="${p.bulk_enabled?'':'display:none;'}">
+          <label>Bulk price (₹ per unit)</label>
+          <input type="number" inputmode="decimal" id="f_bulk_price" value="${p.bulk_price||''}">
+        </div>
+        <div class="actions">
+          <button class="btn secondary" id="pd_cancel">Cancel</button>
+          <button class="btn" id="pd_save">Save</button>
+        </div>
+        <button class="btn danger" id="pd_delete" style="width:100%; margin-top:14px;">Delete Product</button>
       </div></div>`;
-    document.getElementById('pd_edit').onclick = ()=>openProductModal(id);
-    document.getElementById('pd_delete').onclick = ()=>deleteProduct(id);
+    document.getElementById('f_bulk_enabled').onchange = (e)=>{
+      document.getElementById('f_bulk_price_wrap').style.display = e.target.checked ? '' : 'none';
+    };
+    document.getElementById('pd_cancel').onclick = goBackOneLevel;
+    document.getElementById('pd_save').onclick = async ()=>{
+      const name = document.getElementById('f_name').value.trim();
+      if(!name){ toast('Product name is required'); return; }
+      const payload = {
+        name,
+        category: document.getElementById('f_category').value.trim(),
+        size: document.getElementById('f_size').value.trim(),
+        unit: document.getElementById('f_unit').value.trim() || 'Bottle',
+        purchase_price: parseFloat(document.getElementById('f_purchase').value)||0,
+        selling_price: parseFloat(document.getElementById('f_selling').value)||0,
+        bulk_enabled: document.getElementById('f_bulk_enabled').checked,
+        bulk_price: parseFloat(document.getElementById('f_bulk_price').value)||0,
+      };
+      const {error} = await sb.from('products').update(payload).eq('id', id);
+      if(error){ toast('Save failed: '+error.message); return; }
+      toast('Product saved');
+      await loadAll();
+      goBackOneLevel(); // return to the (now-refreshed) read-only detail view
+    };
+    document.getElementById('pd_delete').onclick = ()=>{
+      pushNavLevel(()=>showProductDetail(id, true));
+      confirmDeleteProductUI(p);
+    };
   }
+  function confirmDeleteProductUI(p){
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="overlay"><div class="modal">
+        <h3>Delete Product?</h3>
+        <p>Are you sure you want to delete ${productLabel(p)}? It will be removed from your active list, but its sales and stock history are kept.</p>
+        <div class="actions"><button class="btn secondary" id="dp_cancel">Cancel</button><button class="btn danger" id="dp_confirm">Delete</button></div>
+      </div></div>`;
+    document.getElementById('dp_cancel').onclick = goBackOneLevel;
+    document.getElementById('dp_confirm').onclick = async ()=>{
+      const ok = await archiveProduct(p.id);
+      if(!ok) return;
+      navBackStack = [];
+      closeModal();
+      state.tab = 'products';
+      await loadAll();
+    };
+  }
+
   function openProductModal(id){
-    const p = id ? productById(id) : {id:null, name:'', brand:'', category:'', size:'', unit:'Bottle', purchase_price:'', selling_price:'', bulk_enabled:false, bulk_price:''};
+    const p = id ? productById(id) : {id:null, name:'', category:'', size:'', unit:'Bottle', purchase_price:'', selling_price:'', bulk_enabled:false, bulk_price:''};
     document.getElementById('modalRoot').innerHTML = `
       <div class="overlay"><div class="modal">
         <h3>${id ? 'Edit product' : 'Add product'}</h3>
         <div class="field"><label>Product name</label><input type="text" id="f_name" value="${p.name}" placeholder="Royal Stag"></div>
-        <div class="grid2">
-          <div class="field"><label>Brand</label><input type="text" id="f_brand" value="${p.brand||''}"></div>
-          <div class="field"><label>Category</label><input type="text" id="f_category" value="${p.category||''}" placeholder="Whisky / Beer"></div>
-        </div>
+        <div class="field"><label>Category</label><input type="text" id="f_category" value="${p.category||''}" placeholder="Whisky / Beer"></div>
         <div class="grid2">
           <div class="field"><label>Bottle size</label><input type="text" id="f_size" value="${p.size||''}" placeholder="180ml"></div>
           <div class="field"><label>Unit</label><input type="text" id="f_unit" value="${p.unit||'Bottle'}"></div>
@@ -710,7 +857,7 @@
         </div>
         <div class="actions"><button class="btn secondary" id="cancelBtn">Cancel</button><button class="btn" id="saveBtn">Save product</button></div>
       </div></div>`;
-    document.getElementById('cancelBtn').onclick = closeModal;
+    document.getElementById('cancelBtn').onclick = id ? closeModal : goBackOneLevel;
     document.getElementById('f_bulk_enabled').onchange = (e)=>{
       document.getElementById('f_bulk_price_wrap').style.display = e.target.checked ? '' : 'none';
     };
@@ -718,7 +865,7 @@
       const name = document.getElementById('f_name').value.trim();
       if(!name){ toast('Product name is required'); return; }
       const payload = {
-        name, brand: document.getElementById('f_brand').value.trim(),
+        name,
         category: document.getElementById('f_category').value.trim(),
         size: document.getElementById('f_size').value.trim(),
         unit: document.getElementById('f_unit').value.trim() || 'Bottle',
@@ -731,14 +878,22 @@
       if(id){ ({error} = await sb.from('products').update(payload).eq('id', id)); }
       else { ({error} = await sb.from('products').insert(payload)); }
       if(error){ toast('Save failed: '+error.message); return; }
-      closeModal(); toast('Product saved');
-      await loadAll();
+      toast('Product saved');
+      if(id){ closeModal(); await loadAll(); } else { navBackStack=[]; closeModal(); await loadAll(); }
     };
   }
-  async function deleteProduct(id){
-    if(!confirm('Remove this product? Its stock history will also be removed.')) return;
-    const {error} = await sb.from('products').delete().eq('id', id);
-    if(error){ toast('Delete failed: '+error.message); return; }
+  // Archives a product (soft delete) — preserves stock_additions/stock_transfers audit
+  // history and all historical closing records, which already store their own
+  // product name/price snapshot and don't depend on the live product row.
+  async function archiveProduct(id){
+    const {error} = await sb.from('products').update({active:false}).eq('id', id);
+    if(error){ toast('Delete failed: '+error.message); return false; }
+    return true;
+  }
+  async function deleteProduct(id){ // desktop path — unchanged native confirm() UX
+    if(!confirm('Remove this product from your active list? Its sales and stock history are kept.')) return;
+    const ok = await archiveProduct(id);
+    if(!ok) return;
     closeModal();
     await loadAll();
   }
@@ -762,8 +917,15 @@
       </div>
       <div id="invContent">${sub==='main' ? mainStorageContent() : dailyInventoryContent()}</div>
     `;
-    document.getElementById('invTabMain').onclick = ()=>{ state.inventorySubTab='main'; render(); };
-    document.getElementById('invTabDaily').onclick = ()=>{ state.inventorySubTab='daily'; render(); };
+    document.getElementById('invTabMain').onclick = ()=>{
+      if(state.inventorySubTab==='daily'){ goBackOneLevel(); }
+    };
+    document.getElementById('invTabDaily').onclick = ()=>{
+      if(state.inventorySubTab==='main'){
+        pushNavLevel(()=>{ state.inventorySubTab='main'; render(); });
+        state.inventorySubTab='daily'; render();
+      }
+    };
     if(sub==='main') bindMainStorageHandlers();
   }
   function mainStorageContent(){
@@ -843,7 +1005,10 @@
         <div class="card"><h3>Today's transfers</h3>${renderTodaysTransfers()}</div>
       `;
       const btn = document.getElementById('startTransferBtn');
-      if(btn) btn.onclick = ()=>{ state.transferWizard = {step:'entering', qtys:{}}; render(); };
+      if(btn) btn.onclick = ()=>{
+        pushNavLevel(()=>{ state.transferWizard = null; render(); });
+        state.transferWizard = {step:'entering', qtys:{}}; render();
+      };
       return;
     }
 
@@ -867,7 +1032,7 @@
       main.querySelectorAll('[data-t-qty]').forEach(inp=>{
         inp.oninput = ()=>{ w.qtys[inp.dataset.tQty] = inp.value; };
       });
-      document.getElementById('cancelWizard').onclick = ()=>{ state.transferWizard = null; render(); };
+      document.getElementById('cancelWizard').onclick = goBackOneLevel;
       document.getElementById('reviewTransfer').onclick = ()=>{
         const entries = Object.entries(w.qtys).filter(([pid,q])=>parseInt(q,10)>0);
         if(!entries.length){ toast('Enter at least one quantity to transfer'); return; }
@@ -875,6 +1040,7 @@
           const p = productById(pid);
           if(parseInt(q,10) > (p.main_stock||0)){ toast(`${productLabel(p)}: cannot transfer more than available (${p.main_stock||0})`); return; }
         }
+        pushNavLevel(()=>{ w.step='entering'; render(); });
         w.step = 'review';
         render();
       };
@@ -895,7 +1061,7 @@
         </div>
       </div>
     `;
-    document.getElementById('backToEntry').onclick = ()=>{ w.step='entering'; render(); };
+    document.getElementById('backToEntry').onclick = goBackOneLevel;
     document.getElementById('confirmTransfer').onclick = async ()=>{
       const {data: batch, error: e0} = await sb.from('transfer_batches').insert({
         business_date: businessDateISO(), created_by: state.session.name
@@ -906,6 +1072,7 @@
         await sb.from('stock_transfers').insert({ product_id: e.p.id, quantity: e.qty, transfer_batch_id: batch.id });
       }
       state.transferWizard = null;
+      navBackStack = [];
       toast('Transfer complete');
       await loadAll();
     };
@@ -1076,9 +1243,7 @@
     main.querySelectorAll('[data-remaining]').forEach(inp=>{
       inp.oninput = ()=>{ d.remaining[inp.dataset.remaining] = inp.value; patchClosing(); };
     });
-    main.querySelectorAll('[data-bulk]').forEach(inp=>{
-      inp.oninput = ()=>{ d.bulkSold[inp.dataset.bulk] = inp.value; patchClosing(); };
-    });
+    bindBulkInputs();
     ['cash','upi','card'].forEach(key=>{
       const el = document.getElementById('in_'+key);
       if(el) el.oninput = ()=>{ d[key]=el.value; patchClosing(); };
@@ -1097,6 +1262,13 @@
     };
     const finalizeBtn = document.getElementById('finalizeDay');
     if(finalizeBtn) finalizeBtn.onclick = finalizeClosing;
+  }
+
+  function bindBulkInputs(){
+    const d = state.draft;
+    document.querySelectorAll('[data-bulk]').forEach(inp=>{
+      inp.oninput = ()=>{ d.bulkSold[inp.dataset.bulk] = inp.value; patchClosing(); };
+    });
   }
 
   function bindCreditRowHandlers(){
@@ -1157,6 +1329,7 @@
     const currentlyShowingTable = wrap && wrap.querySelector('table');
     if(wrap && (calc.allEntered !== !!currentlyShowingTable)){
       wrap.innerHTML = renderSalesSummary(calc, d);
+      bindBulkInputs();
     }
     scheduleDraftSave();
   }
@@ -1289,27 +1462,31 @@
       document.getElementById('creditListWrap').innerHTML = creditPeopleListHTML();
       bindCreditListHandlers();
     };
-    document.getElementById('addCreditBtn').onclick = openAddCreditModal;
-    document.getElementById('recordRepaymentBtn').onclick = openRecordRepaymentFlow;
+    document.getElementById('addCreditBtn').onclick = ()=>{ pushNavLevel(closeModal); openAddCreditModal(); };
+    document.getElementById('recordRepaymentBtn').onclick = ()=>{ pushNavLevel(closeModal); openRecordRepaymentFlow(); };
     bindCreditListHandlers();
   }
   function creditPeopleListHTML(){
     const search = (state.creditSearch||'').toLowerCase();
     const filtered = state.creditUsers.map(u=>({u, bal: creditBalance(u.id)}))
+      .filter(x=>x.bal > 0) // fully repaid people drop off the active list — history is preserved, just not shown here
       .filter(x=>!search || x.u.name.toLowerCase().includes(search))
       .sort((a,b)=>b.bal - a.bal);
-    if(!filtered.length) return `<div class="empty">No credit records yet.</div>`;
+    if(!filtered.length) return `<div class="empty">No outstanding credit right now.</div>`;
     return filtered.map(x=>`
       <div class="listrow" data-view="${x.u.id}">
         <div class="listrow-title">${x.u.name}</div>
         <div style="display:flex; align-items:center; gap:10px;">
-          <b class="mono" style="color:${x.bal>0?'var(--warn)':'var(--text-dim)'};">${fmt(x.bal)}</b>
+          <b class="mono" style="color:var(--warn);">${fmt(x.bal)}</b>
           <span class="chev">›</span>
         </div>
       </div>`).join('');
   }
   function bindCreditListHandlers(){
-    document.querySelectorAll('#creditListWrap [data-view]').forEach(b=>b.onclick=()=>openCreditUserModal(b.dataset.view));
+    document.querySelectorAll('#creditListWrap [data-view]').forEach(b=>b.onclick=()=>{
+      pushNavLevel(closeModal);
+      openCreditUserModal(b.dataset.view);
+    });
   }
   function openRecordRepaymentFlow(){
     const withBalance = state.creditUsers.map(u=>({u, bal:creditBalance(u.id)})).filter(x=>x.bal>0).sort((a,b)=>b.bal-a.bal);
@@ -1325,11 +1502,12 @@
       </div></div>`;
     const sel = document.getElementById('rp_person');
     sel.onchange = ()=>{ const x=withBalance.find(w=>w.u.id===sel.value); document.getElementById('rp_amount').value = x.bal; };
-    document.getElementById('rp_cancel').onclick = closeModal;
+    document.getElementById('rp_cancel').onclick = goBackOneLevel;
     document.getElementById('rp_next').onclick = ()=>{
       const amount = parseFloat(document.getElementById('rp_amount').value);
       if(!amount || amount<=0){ toast('Enter a valid amount'); return; }
       const u = creditUserById(sel.value);
+      pushNavLevel(openRecordRepaymentFlow);
       openRepaymentConfirm(u, amount);
     };
   }
@@ -1352,7 +1530,7 @@
     document.getElementById('ac_select').onchange = (e)=>{
       document.getElementById('ac_newname_wrap').style.display = e.target.value==='__new__' ? '' : 'none';
     };
-    document.getElementById('cancelBtn').onclick = closeModal;
+    document.getElementById('cancelBtn').onclick = goBackOneLevel;
     document.getElementById('saveBtn').onclick = async ()=>{
       const amount = parseFloat(document.getElementById('ac_amount').value);
       if(!amount || amount<=0){ toast('Enter a valid amount'); return; }
@@ -1369,14 +1547,16 @@
         note: document.getElementById('ac_note').value.trim() || null, status:'active', recorded_by: state.session.name
       });
       if(error){ toast('Failed: '+error.message); return; }
-      closeModal(); toast('Credit added');
+      toast('Credit added');
+      navBackStack = [];
+      closeModal();
       await loadAll();
     };
   }
 
   function openCreditUserModal(userId){
     const u = creditUserById(userId);
-    if(!u) return;
+    if(!u){ closeModal(); return; }
     const txs = state.creditTransactions.filter(t=>t.credit_user_id===userId).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
     const bal = creditBalance(userId);
     document.getElementById('modalRoot').innerHTML = `
@@ -1395,11 +1575,11 @@
             </tr>`).join('')}</tbody></table></div>
         <div class="actions"><button class="btn secondary" id="closeBtn">Close</button></div>
       </div></div>`;
-    document.getElementById('closeBtn').onclick = closeModal;
+    document.getElementById('closeBtn').onclick = goBackOneLevel;
     const rp = document.getElementById('recordRepayment');
-    if(rp) rp.onclick = ()=>openRepaymentConfirm(u, bal);
+    if(rp) rp.onclick = ()=>{ pushNavLevel(()=>openCreditUserModal(u.id)); openRepaymentConfirm(u, bal); };
     document.querySelectorAll('[data-revert]').forEach(b=>{
-      b.onclick = ()=>openRevertConfirm(b.dataset.revert, userId);
+      b.onclick = ()=>{ pushNavLevel(()=>openCreditUserModal(userId)); openRevertConfirm(b.dataset.revert, userId); };
     });
   }
 
@@ -1411,10 +1591,11 @@
         <div class="field"><label>Amount paid ₹</label><input type="number" inputmode="decimal" id="rp_amount" value="${bal}"></div>
         <div class="actions"><button class="btn secondary" id="rp_cancel">Cancel</button><button class="btn" id="rp_confirm">Confirm</button></div>
       </div></div>`;
-    document.getElementById('rp_cancel').onclick = ()=>openCreditUserModal(u.id);
+    document.getElementById('rp_cancel').onclick = goBackOneLevel;
     document.getElementById('rp_confirm').onclick = ()=>{
       const amount = parseFloat(document.getElementById('rp_amount').value);
       if(!amount || amount<=0){ toast('Enter a valid amount'); return; }
+      pushNavLevel(()=>openRepaymentConfirm(u, bal));
       openRepaymentMethodChoice(u, amount);
     };
   }
@@ -1434,7 +1615,9 @@
         method, status:'active', recorded_by: state.session.name
       });
       if(error){ toast('Failed: '+error.message); return; }
-      closeModal(); toast('Repayment recorded');
+      toast('Repayment recorded');
+      navBackStack = [];
+      closeModal();
       await loadAll();
     };
     document.getElementById('method_cash').onclick = ()=>confirmMethod('cash');
@@ -1447,13 +1630,13 @@
         <p>Are you sure you want to revert this payment? The amount will become outstanding again.</p>
         <div class="actions"><button class="btn secondary" id="rv_cancel">Cancel</button><button class="btn danger" id="rv_confirm">Revert payment</button></div>
       </div></div>`;
-    document.getElementById('rv_cancel').onclick = ()=>openCreditUserModal(userId);
+    document.getElementById('rv_cancel').onclick = goBackOneLevel;
     document.getElementById('rv_confirm').onclick = async ()=>{
       const {error} = await sb.from('credit_transactions').update({status:'reverted', reverted_at: new Date().toISOString()}).eq('id', txId);
       if(error){ toast('Failed: '+error.message); return; }
       toast('Payment reverted');
       await loadAll();
-      openCreditUserModal(userId);
+      openCreditUserModal(userId); // refresh in place — same nav level, no push
     };
   }
 
@@ -1472,6 +1655,7 @@
     `;
     bindDailyReportSection();
     bindCollectionReportSection();
+    bindCreditReportSection();
   }
   function reportTitle(view){
     return {daily:'Daily Report', inventory:'Inventory Report', transfers:'Transfer History', collection:'Collection Report', credit:'Credit Report', productsales:'Product Sales Report'}[view] || 'Report';
@@ -1493,7 +1677,10 @@
         <div class="card" style="padding:4px 8px;">
           ${items.map(i=>`<div class="listrow" data-report="${i.id}"><div class="listrow-title">${i.label}</div><span class="chev">›</span></div>`).join('')}
         </div>`;
-      main.querySelectorAll('[data-report]').forEach(r=>r.onclick=()=>{ state.reportsView=r.dataset.report; render(); });
+      main.querySelectorAll('[data-report]').forEach(r=>r.onclick=()=>{
+        pushNavLevel(()=>{ state.reportsView=null; render(); });
+        state.reportsView=r.dataset.report; render();
+      });
       return;
     }
     main.innerHTML = renderTopbar() + `
@@ -1503,7 +1690,7 @@
       </div>
       <div id="reportDetailWrap"></div>
     `;
-    document.getElementById('reportsBack').onclick = ()=>{ state.reportsView=null; render(); };
+    document.getElementById('reportsBack').onclick = goBackOneLevel;
     renderReportDetail(view);
   }
   function renderReportDetail(view){
@@ -1516,6 +1703,7 @@
     else if(view==='productsales') wrap.innerHTML = `<div class="card">${renderProductSalesReport()}</div>`;
     if(view==='daily') bindDailyReportSection();
     if(view==='collection') bindCollectionReportSection();
+    if(view==='credit') bindCreditReportSection();
   }
   function dailyReportSectionHTML(){
     const dates = [...new Set(state.history.map(h=>h.date))].sort((a,b)=>b.localeCompare(a));
@@ -1584,17 +1772,32 @@
     if(exPdf) exPdf.onclick = exportCollectionPDF;
   }
   function creditReportSectionHTML(){
-    const rows = state.creditUsers.map(u=>({u, bal:creditBalance(u.id)})).sort((a,b)=>b.bal-a.bal);
+    const rows = state.creditUsers.map(u=>({u, bal:creditBalance(u.id)})).filter(x=>x.bal>0).sort((a,b)=>b.bal-a.bal);
     const recentTx = [...state.creditTransactions].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).slice(0,50);
     return `
       <div class="row" style="margin-bottom:12px;"><div class="stat"><div class="label">Total outstanding</div><div class="value warn">${fmt(totalOutstandingCredit())}</div></div></div>
       <h3 style="font-size:13px; color:var(--text-dim); margin-bottom:8px;">Balances by person</h3>
       <div class="tablewrap">${rows.length ? `<table class="mobile-cards"><thead><tr><th>Person</th><th class="num">Outstanding</th></tr></thead>
-        <tbody>${rows.map(x=>`<tr><td data-label="Person">${x.u.name}</td><td class="num" data-label="Outstanding">${fmt(x.bal)}</td></tr>`).join('')}</tbody></table>` : `<div class="empty">No credit records yet.</div>`}</div>
-      <h3 style="font-size:13px; color:var(--text-dim); margin:16px 0 8px;">Recent transactions</h3>
-      <div class="tablewrap">${recentTx.length ? `<table class="mobile-cards"><thead><tr><th>Person</th><th>Date</th><th>Type</th><th class="num">Amount</th><th>Method</th><th>Status</th></tr></thead>
-        <tbody>${recentTx.map(t=>{ const u=creditUserById(t.credit_user_id); return `<tr><td data-label="Person">${u?u.name:'—'}</td><td data-label="Date">${fmtDate(t.business_date)}</td><td data-label="Type">${t.type==='given'?'Given':'Repaid'}${t.status==='reverted'?' (reverted)':''}</td><td class="num" data-label="Amount">${fmt(t.amount)}</td><td data-label="Method">${t.method?t.method.toUpperCase():'—'}</td><td data-label="Status">${t.status}</td></tr>`; }).join('')}</tbody></table>` : `<div class="empty">No transactions yet.</div>`}</div>
+        <tbody>${rows.map(x=>`<tr><td data-label="Person">${x.u.name}</td><td class="num" data-label="Outstanding">${fmt(x.bal)}</td></tr>`).join('')}</tbody></table>` : `<div class="empty">No outstanding credit right now.</div>`}</div>
+      <div style="margin-top:16px;">
+        <button class="btn secondary" id="toggleCreditTx">View Recent Transactions</button>
+        <div id="creditTxWrap" style="display:none; margin-top:12px;">
+          <h3 style="font-size:13px; color:var(--text-dim); margin-bottom:8px;">Recent transactions</h3>
+          <div class="tablewrap">${recentTx.length ? `<table class="mobile-cards"><thead><tr><th>Person</th><th>Date</th><th>Type</th><th class="num">Amount</th><th>Method</th><th>Status</th></tr></thead>
+            <tbody>${recentTx.map(t=>{ const u=creditUserById(t.credit_user_id); return `<tr><td data-label="Person">${u?u.name:'—'}</td><td data-label="Date">${fmtDate(t.business_date)}</td><td data-label="Type">${t.type==='given'?'Given':'Repaid'}${t.status==='reverted'?' (reverted)':''}</td><td class="num" data-label="Amount">${fmt(t.amount)}</td><td data-label="Method">${t.method?t.method.toUpperCase():'—'}</td><td data-label="Status">${t.status}</td></tr>`; }).join('')}</tbody></table>` : `<div class="empty">No transactions yet.</div>`}</div>
+        </div>
+      </div>
     `;
+  }
+  function bindCreditReportSection(){
+    const btn = document.getElementById('toggleCreditTx');
+    if(!btn) return;
+    btn.onclick = ()=>{
+      const wrap = document.getElementById('creditTxWrap');
+      const showing = wrap.style.display !== 'none';
+      wrap.style.display = showing ? 'none' : '';
+      btn.textContent = showing ? 'View Recent Transactions' : 'Hide Recent Transactions';
+    };
   }
   function renderTransferHistory(){
     if(!state.transferBatches.length) return `<div class="empty">No transfers recorded yet.</div>`;
