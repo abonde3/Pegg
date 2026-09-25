@@ -197,6 +197,7 @@
     {id:'transfer', label:'Transfer', roles:['owner','manager']},
     {id:'closing', label:'Closing', roles:['owner','manager']},
     {id:'credit', label:'Credit', roles:['owner','manager']},
+    {id:'expense', label:'Expense', roles:['owner','manager']},
     {id:'reports', label:'Reports', roles:['owner']},
     {id:'users', label:'Users', roles:['owner']},
   ];
@@ -204,6 +205,7 @@
   let state = {
     products: [], history: [], draft: null,
     creditUsers: [], creditTransactions: [],
+    expenses: [],
     transferBatches: [],
     authUser: null,       // {id, email} from Supabase Auth — null until signed in
     myBars: [],           // [{bar_id, bar_name, role, active}] — bars this user belongs to
@@ -403,6 +405,13 @@
     const upi = txs.filter(t=>t.method==='upi').reduce((a,t)=>a+Number(t.amount),0);
     return {cash, upi, total: cash+upi};
   }
+  const EXPENSE_CATEGORY_SUGGESTIONS = ['Electricity','Food/Snacks','Transport','Repairs','Staff','Miscellaneous'];
+  function expensesForDate(dateStr){
+    return state.expenses.filter(e=>e.business_date===dateStr);
+  }
+  function totalExpensesForDate(dateStr){
+    return expensesForDate(dateStr).reduce((a,e)=>a+Number(e.amount),0);
+  }
   function closingEditableDate(dateStr){
     const laterClosingExists = state.history.some(h=>h.date > dateStr);
     const laterDraftExists = state.draft && state.draft.date > dateStr;
@@ -431,14 +440,10 @@
   }
 
   async function afterAuthResolved(){
-    await sb.rpc('accept_pending_invites'); // silently claims any invites matching this email
-    const [{data: bars, error: barsErr}, {data: superAdmin}] = await Promise.all([
-      sb.rpc('list_my_bars'),
-      sb.rpc('is_super_admin')
-    ]);
-    if(barsErr){ console.error(barsErr); toast('Could not load your bars.'); }
-    state.myBars = bars || [];
-    state.isSuperAdmin = !!superAdmin;
+    const {data, error: bootErr} = await sb.rpc('login_bootstrap');
+    if(bootErr){ console.error(bootErr); toast('Could not load your bars.'); }
+    state.myBars = (data && data.bars) || [];
+    state.isSuperAdmin = !!(data && data.is_super_admin);
 
     let savedBarId = null;
     try{ savedBarId = localStorage.getItem(CURRENT_BAR_KEY); }catch(e){}
@@ -474,22 +479,25 @@
       {data: draftRow, error: dErr},
       {data: creditUsers, error: cuErr},
       {data: creditTx, error: ctErr},
-      {data: transferBatches, error: tbErr}
+      {data: transferBatches, error: tbErr},
+      {data: expenses, error: exErr}
     ] = await Promise.all([
       sb.from('products').select('*').eq('bar_id', barId).eq('active', true).order('name'),
       sb.from('closings').select('*, closing_line_items(*)').eq('bar_id', barId).order('closing_date', {ascending:false}),
       sb.from('closing_draft').select('*').eq('bar_id', barId).maybeSingle(),
       sb.from('credit_users').select('*').eq('bar_id', barId).order('name'),
       sb.from('credit_transactions').select('*').eq('bar_id', barId).order('created_at', {ascending:false}),
-      sb.from('transfer_batches').select('*, stock_transfers(*)').eq('bar_id', barId).order('created_at', {ascending:false})
+      sb.from('transfer_batches').select('*, stock_transfers(*)').eq('bar_id', barId).order('created_at', {ascending:false}),
+      sb.from('expenses').select('*').eq('bar_id', barId).order('business_date', {ascending:false})
     ]);
-    const anyErr = pErr||cErr||dErr||cuErr||ctErr||tbErr;
+    const anyErr = pErr||cErr||dErr||cuErr||ctErr||tbErr||exErr;
     if(anyErr){ console.error(anyErr); toast('Could not reach the database — check your connection.'); }
 
     state.products = products || [];
     state.creditUsers = creditUsers || [];
     state.creditTransactions = creditTx || [];
     state.transferBatches = transferBatches || [];
+    state.expenses = expenses || [];
     state.history = (closings||[]).map(c=>({
       id: c.id, date: c.closing_date, totalExpected: c.total_expected, cash: c.cash, upi: c.upi, card: c.card,
       credit: c.credit||0, totalCollected: c.total_collected, difference: c.difference, status: c.status, closedBy: c.closed_by,
@@ -668,7 +676,8 @@
   function openCreateAdditionalBarModal(){
     document.getElementById('modalRoot').innerHTML = `
       <div class="overlay"><div class="modal">
-        <h3>Register a new bar</h3>
+        <h3>Register another bar</h3>
+        <p style="color:var(--text-dim); font-size:12.5px; margin-bottom:14px;">This creates a completely separate bar with its own products, inventory, closings and credit — nothing carries over. You'll be its Owner.</p>
         <div class="field"><label>Bar name</label><input type="text" id="nb_name" placeholder="Royal Bar"></div>
         <div class="err" id="nb_err"></div>
         <div class="actions"><button class="btn secondary" id="nb_cancel">Cancel</button><button class="btn" id="nb_create">Create</button></div>
@@ -686,6 +695,15 @@
         return;
       }
       closeModal();
+      if(state.currentBar){
+        // Triggered from inside an already-selected bar — don't disrupt the
+        // current session, just refresh the bar list so it's ready to switch to.
+        const {data: bars} = await sb.rpc('list_my_bars');
+        state.myBars = bars || [];
+        toast(`"${name}" created — use Switch Bar to open it`);
+        render();
+        return;
+      }
       state.loading = true; render();
       await afterAuthResolved();
     };
@@ -751,12 +769,14 @@
     foot.className = 'sidebar-foot';
     foot.innerHTML = `<div class="who"><b>${(state.authUser.email||'')}</b><div class="role">${roleLabel(state.currentBar.role)}</div></div>
       ${multiBar ? `<button class="navbtn" id="switchBarBtnSide"><span class="dot"></span>Switch bar</button>` : ''}
+      <button class="navbtn" id="registerBarBtnSide"><span class="dot"></span>Register another bar</button>
       ${state.isSuperAdmin ? `<button class="navbtn" id="adminBtnSide"><span class="dot"></span>Platform admin</button>` : ''}
       <button class="navbtn" id="logoutBtnSide"><span class="dot"></span>Log out</button>`;
     sbEl.appendChild(foot);
     document.getElementById('logoutBtnSide').onclick = logout;
     const swBtn = document.getElementById('switchBarBtnSide');
     if(swBtn) swBtn.onclick = switchBar;
+    document.getElementById('registerBarBtnSide').onclick = openCreateAdditionalBarModal;
     const adminBtn = document.getElementById('adminBtnSide');
     if(adminBtn) adminBtn.onclick = ()=>{ state.showSuperAdminPanel = true; render(); };
 
@@ -1389,6 +1409,8 @@
     const d = state.draft;
     const calc = computeClosingRows(d);
     const creditToday = creditCollectedForDate(d.date);
+    const expensesToday = totalExpensesForDate(d.date);
+    const netCollection = calc.totalCollected - expensesToday;
 
     main.innerHTML = renderTopbar() + `
       <div class="pagehead"><h1>Daily closing — ${fmtDate(d.date)}</h1><p>Enter remaining stock, then settle collections.</p></div>
@@ -1431,6 +1453,15 @@
           <div class="stat"><div class="label">Cash</div><div class="value mono">${fmt(creditToday.cash)}</div></div>
           <div class="stat"><div class="label">UPI</div><div class="value mono">${fmt(creditToday.upi)}</div></div>
           <div class="stat"><div class="label">Total money received today</div><div class="value mono">${fmt(calc.totalCollected + creditToday.total)}</div></div>
+        </div>
+      </div>
+
+      <div class="card"><h3>Net collection</h3>
+        <p style="color:var(--text-dim); font-size:13px; margin-bottom:10px;">Today's expenses are deducted from collection only — sales figures above are unaffected.</p>
+        <div class="row">
+          <div class="stat"><div class="label">Collection</div><div class="value">${fmt(calc.totalCollected)}</div></div>
+          <div class="stat"><div class="label">Expenses</div><div class="value warn">${fmt(expensesToday)}</div></div>
+          <div class="stat"><div class="label">Net collection</div><div class="value good">${fmt(netCollection)}</div></div>
         </div>
       </div>
 
@@ -1917,6 +1948,98 @@
     };
   }
 
+  // ---------- EXPENSE ----------
+  function renderExpense(){
+    const main = document.getElementById('main');
+    const bDate = businessDateISO();
+    const todays = expensesForDate(bDate);
+    const total = totalExpensesForDate(bDate);
+    main.innerHTML = renderTopbar() + `
+      <div class="pagehead"><h1>Expense</h1><p>Day-to-day costs — electricity, food, transport, repairs, anything else.</p></div>
+      <div class="card">
+        <h3>Add expense</h3>
+        <div class="grid2">
+          <div class="field"><label>Amount ₹</label><input type="number" inputmode="decimal" id="ex_amount"></div>
+          <div class="field"><label>Category</label>
+            <input type="text" id="ex_category" list="ex_category_list" placeholder="Electricity">
+            <datalist id="ex_category_list">${EXPENSE_CATEGORY_SUGGESTIONS.map(c=>`<option value="${c}">`).join('')}</datalist>
+          </div>
+        </div>
+        <div class="field"><label>Note (optional)</label><input type="text" id="ex_note" placeholder="Generator fuel"></div>
+        <button class="btn" id="ex_add" style="width:100%;">Add Expense</button>
+      </div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between; align-items:center;"><h3 style="margin:0;">Today's Expenses</h3><b class="mono">${fmt(total)}</b></div>
+        <div class="tablewrap" style="margin-top:12px;" id="expenseListWrap">${expenseListHTML(todays)}</div>
+      </div>
+    `;
+    document.getElementById('ex_add').onclick = async ()=>{
+      const amount = parseFloat(document.getElementById('ex_amount').value);
+      const category = document.getElementById('ex_category').value.trim();
+      if(!amount || amount<=0){ toast('Enter a valid amount'); return; }
+      if(!category){ toast('Enter a category'); return; }
+      const {error} = await sb.from('expenses').insert({
+        bar_id: state.currentBar.bar_id, business_date: bDate, amount, category,
+        note: document.getElementById('ex_note').value.trim() || null,
+        created_by: (state.authUser.email||'')
+      });
+      if(error){ toast('Failed: '+error.message); return; }
+      toast('Expense added');
+      await loadAll();
+    };
+    bindExpenseListHandlers();
+  }
+  function expenseListHTML(list){
+    if(!list.length) return `<div class="empty">No expenses recorded for today.</div>`;
+    return `<table class="mobile-cards"><thead><tr><th>Category</th><th>Note</th><th class="num">Amount</th><th></th></tr></thead>
+      <tbody>${list.map(e=>`
+        <tr><td data-label="Category">${e.category}</td><td data-label="Note">${e.note||'—'}</td><td class="num" data-label="Amount">${fmt(e.amount)}</td>
+          <td data-label="" style="text-align:right; white-space:nowrap;">
+            <button class="iconbtn" data-editexpense="${e.id}">Edit</button>
+            <button class="iconbtn danger" data-delexpense="${e.id}">Delete</button>
+          </td></tr>`).join('')}</tbody></table>`;
+  }
+  function bindExpenseListHandlers(){
+    document.querySelectorAll('[data-editexpense]').forEach(b=>b.onclick=()=>openEditExpenseModal(b.dataset.editexpense));
+    document.querySelectorAll('[data-delexpense]').forEach(b=>b.onclick=()=>deleteExpense(b.dataset.delexpense));
+  }
+  function openEditExpenseModal(id){
+    const e = state.expenses.find(x=>x.id===id);
+    if(!e) return;
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="overlay"><div class="modal">
+        <h3>Edit expense</h3>
+        <div class="grid2">
+          <div class="field"><label>Amount ₹</label><input type="number" inputmode="decimal" id="ee_amount" value="${e.amount}"></div>
+          <div class="field"><label>Category</label><input type="text" id="ee_category" list="ee_category_list" value="${e.category}">
+            <datalist id="ee_category_list">${EXPENSE_CATEGORY_SUGGESTIONS.map(c=>`<option value="${c}">`).join('')}</datalist>
+          </div>
+        </div>
+        <div class="field"><label>Note (optional)</label><input type="text" id="ee_note" value="${e.note||''}"></div>
+        <div class="actions"><button class="btn secondary" id="ee_cancel">Cancel</button><button class="btn" id="ee_save">Save</button></div>
+      </div></div>`;
+    document.getElementById('ee_cancel').onclick = closeModal;
+    document.getElementById('ee_save').onclick = async ()=>{
+      const amount = parseFloat(document.getElementById('ee_amount').value);
+      const category = document.getElementById('ee_category').value.trim();
+      if(!amount || amount<=0){ toast('Enter a valid amount'); return; }
+      if(!category){ toast('Enter a category'); return; }
+      const {error} = await sb.from('expenses').update({
+        amount, category, note: document.getElementById('ee_note').value.trim() || null
+      }).eq('id', id);
+      if(error){ toast('Failed: '+error.message); return; }
+      toast('Expense updated');
+      closeModal();
+      await loadAll();
+    };
+  }
+  async function deleteExpense(id){
+    if(!confirm('Delete this expense?')) return;
+    const {error} = await sb.from('expenses').delete().eq('id', id);
+    if(error){ toast('Failed: '+error.message); return; }
+    await loadAll();
+  }
+
   // ---------- REPORTS ----------
   function renderReports(){
     if(isMobile()){ renderReportsMobile(); return; }
@@ -1929,13 +2052,14 @@
       <div class="card"><h3>Product sales report</h3>${renderProductSalesReport()}</div>
       <div class="card"><h3>Collection report</h3>${collectionReportSectionHTML()}</div>
       <div class="card"><h3>Credit report</h3>${creditReportSectionHTML()}</div>
+      <div class="card"><h3>Expense report</h3>${expenseReportSectionHTML()}</div>
     `;
     bindDailyReportSection();
     bindCollectionReportSection();
     bindCreditReportSection();
   }
   function reportTitle(view){
-    return {daily:'Daily Report', inventory:'Inventory Report', transfers:'Transfer History', collection:'Collection Report', credit:'Credit Report', productsales:'Product Sales Report'}[view] || 'Report';
+    return {daily:'Daily Report', inventory:'Inventory Report', transfers:'Transfer History', collection:'Collection Report', credit:'Credit Report', productsales:'Product Sales Report', expense:'Expense Report'}[view] || 'Report';
   }
   function renderReportsMobile(){
     const main = document.getElementById('main');
@@ -1947,6 +2071,7 @@
         {id:'transfers', label:'Transfer History'},
         {id:'collection', label:'Collection Report'},
         {id:'credit', label:'Credit Report'},
+        {id:'expense', label:'Expense Report'},
         {id:'productsales', label:'Product Sales Report'},
       ];
       main.innerHTML = renderTopbar() + `
@@ -1977,6 +2102,7 @@
     else if(view==='transfers') wrap.innerHTML = `<div class="card">${renderTransferHistory()}</div>`;
     else if(view==='collection') wrap.innerHTML = `<div class="card">${collectionReportSectionHTML()}</div>`;
     else if(view==='credit') wrap.innerHTML = `<div class="card">${creditReportSectionHTML()}</div>`;
+    else if(view==='expense') wrap.innerHTML = `<div class="card">${expenseReportSectionHTML()}</div>`;
     else if(view==='productsales') wrap.innerHTML = `<div class="card">${renderProductSalesReport()}</div>`;
     if(view==='daily') bindDailyReportSection();
     if(view==='collection') bindCollectionReportSection();
@@ -1996,6 +2122,8 @@
       const rec = state.history.find(h=>h.date===sel.value);
       const cls = rec.status==='MATCHED'?'good':(rec.status==='SHORTAGE'?'bad':'warn');
       const editable = state.currentBar.role==='owner' && closingEditableDate(rec.date);
+      const dayExpenses = totalExpensesForDate(rec.date);
+      const dayNet = rec.totalCollected - dayExpenses;
       document.getElementById('dailyReportBody').innerHTML = `
         <div class="tablewrap"><table class="mobile-cards" style="margin-top:12px;"><thead><tr><th>Product</th><th class="num">Available</th><th class="num">Closing</th><th class="num">Sold</th><th class="num">Bulk sold</th><th class="num">Price</th><th class="num">Sales</th></tr></thead>
         <tbody>${rec.records.map(r=>`<tr><td data-label="Product">${r.name}</td><td class="num" data-label="Available">${r.available}</td><td class="num" data-label="Closing">${r.remaining}</td><td class="num" data-label="Sold">${r.sold}</td><td class="num" data-label="Bulk sold">${r.bulkSold||0}</td><td class="num" data-label="Price">${fmt(r.sellingPrice)}</td><td class="num" data-label="Sales">${fmt(r.expected)}</td></tr>`).join('')}</tbody></table></div>
@@ -2004,6 +2132,10 @@
           <div class="stat"><div class="label">Cash+UPI+Card</div><div class="value">${fmt(rec.totalCollected)}</div></div>
           <div class="stat"><div class="label">Credit given</div><div class="value warn">${fmt(rec.credit)}</div></div>
           <div class="stat"><div class="label">Status</div><div class="value ${cls}" style="font-size:16px;">${rec.status}</div></div>
+        </div>
+        <div class="row" style="margin-top:12px;">
+          <div class="stat"><div class="label">Expenses</div><div class="value warn">${fmt(dayExpenses)}</div></div>
+          <div class="stat"><div class="label">Net collection</div><div class="value good">${fmt(dayNet)}</div></div>
         </div>
         ${rec.closedBy ? `<p style="color:var(--text-dim); font-size:12px; margin-top:10px;">Closed by ${rec.closedBy}</p>` : ''}
         <div class="row" style="margin-top:14px; gap:8px;">
@@ -2076,6 +2208,22 @@
       btn.textContent = showing ? 'View Recent Transactions' : 'Hide Recent Transactions';
     };
   }
+  function expenseReportSectionHTML(){
+    const byCategory = {};
+    state.expenses.forEach(e=>{ byCategory[e.category] = (byCategory[e.category]||0) + Number(e.amount); });
+    const catRows = Object.entries(byCategory).sort((a,b)=>b[1]-a[1]);
+    const totalAll = state.expenses.reduce((a,e)=>a+Number(e.amount),0);
+    const recent = [...state.expenses].sort((a,b)=>b.business_date.localeCompare(a.business_date)).slice(0,50);
+    return `
+      <div class="row" style="margin-bottom:12px;"><div class="stat"><div class="label">Total expenses (all time)</div><div class="value warn">${fmt(totalAll)}</div></div></div>
+      <h3 style="font-size:13px; color:var(--text-dim); margin-bottom:8px;">By category</h3>
+      <div class="tablewrap">${catRows.length ? `<table class="mobile-cards"><thead><tr><th>Category</th><th class="num">Total</th></tr></thead>
+        <tbody>${catRows.map(([cat,amt])=>`<tr><td data-label="Category">${cat}</td><td class="num" data-label="Total">${fmt(amt)}</td></tr>`).join('')}</tbody></table>` : `<div class="empty">No expenses recorded yet.</div>`}</div>
+      <h3 style="font-size:13px; color:var(--text-dim); margin:16px 0 8px;">Recent expenses</h3>
+      <div class="tablewrap">${recent.length ? `<table class="mobile-cards"><thead><tr><th>Date</th><th>Category</th><th>Note</th><th class="num">Amount</th></tr></thead>
+        <tbody>${recent.map(e=>`<tr><td data-label="Date">${fmtDate(e.business_date)}</td><td data-label="Category">${e.category}</td><td data-label="Note">${e.note||'—'}</td><td class="num" data-label="Amount">${fmt(e.amount)}</td></tr>`).join('')}</tbody></table>` : `<div class="empty">No expenses recorded yet.</div>`}</div>
+    `;
+  }
   function renderTransferHistory(){
     if(!state.transferBatches.length) return `<div class="empty">No transfers recorded yet.</div>`;
     return `<div class="tablewrap"><table class="mobile-cards"><thead><tr><th>Business date</th><th>Time</th><th>User</th><th>Items</th></tr></thead>
@@ -2104,12 +2252,15 @@
       'Business Date': rec.date, 'Product': r.name, 'Available': r.available, 'Closing': r.remaining,
       'Sold': r.sold, 'Bulk Sold': r.bulkSold||0, 'Price': r.sellingPrice, 'Sales Amount': r.expected
     }));
+    const dayExpenses = totalExpensesForDate(rec.date);
     rows.push({});
     rows.push({'Product':'Expected Total', 'Sales Amount': rec.totalExpected});
     rows.push({'Product':'Cash', 'Sales Amount': rec.cash});
     rows.push({'Product':'UPI', 'Sales Amount': rec.upi});
     rows.push({'Product':'Card', 'Sales Amount': rec.card});
     rows.push({'Product':'Credit Given', 'Sales Amount': rec.credit});
+    rows.push({'Product':'Expenses', 'Sales Amount': dayExpenses});
+    rows.push({'Product':'Net Collection', 'Sales Amount': rec.totalCollected - dayExpenses});
     rows.push({'Product':'Settlement Status', 'Sales Amount': rec.status});
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
@@ -2124,13 +2275,16 @@
       head: [['Product','Available','Closing','Sold','Bulk Sold','Price','Sales']],
       body: rec.records.map(r=>[r.name, r.available, r.remaining, r.sold, r.bulkSold||0, fmt(r.sellingPrice), fmt(r.expected)])
     });
+    const dayExpenses = totalExpensesForDate(rec.date);
     const y = doc.lastAutoTable.finalY + 8;
     doc.autoTable({
       startY: y,
       head: [['Summary','Value']],
       body: [
         ['Expected Total', fmt(rec.totalExpected)], ['Cash', fmt(rec.cash)], ['UPI', fmt(rec.upi)],
-        ['Card', fmt(rec.card)], ['Credit Given', fmt(rec.credit)], ['Status', rec.status]
+        ['Card', fmt(rec.card)], ['Credit Given', fmt(rec.credit)],
+        ['Expenses', fmt(dayExpenses)], ['Net Collection', fmt(rec.totalCollected - dayExpenses)],
+        ['Status', rec.status]
       ]
     });
     doc.save(`Pegg-daily-report-${rec.date}.pdf`);
@@ -2317,6 +2471,7 @@
       case 'transfer': renderTransfer(); break;
       case 'closing': renderClosing(); break;
       case 'credit': renderCredit(); break;
+      case 'expense': renderExpense(); break;
       case 'reports': renderReports(); break;
       case 'users': renderUsers(); break;
     }
